@@ -5,7 +5,6 @@ import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Card, CardContent } from './ui/card';
 import { EXPENSE_CATEGORIES, getCategoryDisplayName } from './CategorySelector';
 import { Calendar, User, Clock, MessageSquare, Send } from 'lucide-react';

@@ -1,5 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
-import { ITask, Priority } from '../types';
+import { ITask, Priority, Department } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 const taskSchema = new Schema<ITask>(
@@ -51,6 +51,11 @@ const taskSchema = new Schema<ITask>(
       required: true,
       index: true
     },
+    department: {
+      type: String,
+      enum: Object.values(Department),
+      required: false
+    },
     amount: {
       type: Number,
       min: 0
@@ -92,10 +97,10 @@ const taskSchema = new Schema<ITask>(
   }
 );
 
-// Indexes
 taskSchema.index({ boardKey: 1, creatorId: 1 });
 taskSchema.index({ assigneeId: 1 });
 taskSchema.index({ createdAt: -1 });
 taskSchema.index({ dueDate: 1 });
+taskSchema.index({ boardKey: 1, department: 1 });
 
 export const Task = mongoose.model<ITask>('Task', taskSchema);

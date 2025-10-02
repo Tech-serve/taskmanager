@@ -9,6 +9,11 @@ export enum Role {
   TECH = 'tech'
 }
 
+export enum Department {
+  SWIP = 'SWIP',
+  GAMBLING = 'GAMBLING',
+}
+
 export enum Priority {
   LOW = 'low',
   MEDIUM = 'medium',
@@ -40,6 +45,7 @@ export interface IUser extends Document {
   passwordHash: string;
   fullName: string;
   roles: Role[];
+  department?: Department;
   groups: string[];
   status: UserStatus;
   lastLogin?: Date;
@@ -71,6 +77,7 @@ export interface IBoard extends Document {
   owners: string[];
   createdAt: Date;
   updatedAt: Date;
+  department?: Department;
 }
 
 export interface IColumn extends Document {
@@ -95,6 +102,7 @@ export interface ITask extends Document {
   tags: string[];
   dueDate?: Date;
   assigneeId?: string;
+  department?: Department;
   creatorId: string;
   amount?: number; // For expense tasks
   category?: string; // Expense category

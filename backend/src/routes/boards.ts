@@ -90,8 +90,23 @@ router.get('/by-key/:key', async (req: AuthRequest, res: Response): Promise<void
 router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const body = req.body || {};
+
+    // ключ доски всегда UPPERCASE
     body.key = String(body.key || '').toUpperCase();
 
+    // ⚠️ Нормализуем allowedRoles к lowercase (enum Role у тебя в нижнем регистре)
+    if (Array.isArray(body.allowedRoles)) {
+      body.allowedRoles = body.allowedRoles
+        .filter((r: unknown) => typeof r === 'string')
+        .map((r: string) => r.trim().toLowerCase());
+    }
+
+    // Чистим составные поля (если фронт шлёт null/undefined)
+    if (!Array.isArray(body.members)) body.members = [];
+    if (!Array.isArray(body.owners)) body.owners = [];
+    if (!Array.isArray(body.allowedGroupIds)) body.allowedGroupIds = [];
+
+    // Проверка уникальности ключа
     const existing = await Board.findOne({ key: body.key });
     if (existing) {
       res.status(400).json({ error: 'Board key already exists' });
@@ -102,9 +117,10 @@ router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequ
     await board.save();
 
     res.status(201).json(board);
-  } catch (e) {
+  } catch (e: any) {
     console.error('Create board error:', e);
-    res.status(500).json({ error: 'Internal server error' });
+    // отдадим причину, чтобы в Network было видно
+    res.status(400).json({ error: e?.message || 'Bad Request' });
   }
 });
 

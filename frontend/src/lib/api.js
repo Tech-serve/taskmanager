@@ -1,3 +1,4 @@
+// src/lib/api.js
 import axios from 'axios';
 
 /**
@@ -30,6 +31,17 @@ const fromBackendTask = (t = {}) => {
   return out;
 };
 
+// Безопасные обёртки для окружений без window/localStorage (SSR/тесты)
+const hasWindow = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+const safeLocalStorage = {
+  getItem(key) {
+    try { return hasWindow && window.localStorage ? window.localStorage.getItem(key) : null; } catch { return null; }
+  },
+  removeItem(key) {
+    try { if (hasWindow && window.localStorage) window.localStorage.removeItem(key); } catch {}
+  }
+};
+
 const BASE = (process.env.REACT_APP_BACKEND_URL || '').replace(/\/+$/, '');
 const API_BASE = BASE ? `${BASE}/api` : '/api';
 
@@ -40,7 +52,7 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
+  const token = safeLocalStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
@@ -50,10 +62,16 @@ api.interceptors.response.use(
   (error) => {
     if (error?.response?.status === 401 && !error.config?._isRetry) {
       error.config._isRetry = true;
-      localStorage.removeItem('token');
-      const isLoginPage = window.location.pathname === '/login' || window.location.pathname === '/';
-      const isLoginRequest = error.config?.url?.includes('/auth/login');
-      if (!isLoginPage && !isLoginRequest) window.location.href = '/login';
+      safeLocalStorage.removeItem('token');
+
+      const pathname = hasWindow ? window.location.pathname : '';
+      const isLoginPage = pathname === '/login' || pathname === '/';
+      const reqUrl = error.config?.url || '';
+      const isLoginRequest = typeof reqUrl === 'string' && reqUrl.includes('/auth/login');
+
+      if (!isLoginPage && !isLoginRequest && hasWindow) {
+        window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }
@@ -150,7 +168,6 @@ export const usersAPI = {
     }
   },
 };
-
 
 // ---------- Roles (Admin) ----------
 export const rolesAPI = {

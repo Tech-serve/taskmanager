@@ -4,89 +4,73 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Badge } from './ui/badge';
 import { Card, CardContent } from './ui/card';
 import { boardsAPI, columnsAPI, rolesAPI } from '../lib/api';
 import { toast } from 'sonner';
-import { 
-  Plus, 
-  Kanban, 
-  Users, 
-  Settings,
-  CheckCircle,
-  ArrowRight
-} from 'lucide-react';
+import { Plus, Kanban, CheckCircle, ArrowRight } from 'lucide-react';
 
 const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
   const [step, setStep] = useState(1);
   const [boardData, setBoardData] = useState({
     name: '',
     key: '',
-    type: 'tasks',
-    template: 'kanban-basic',
-    allowed_roles: ['admin'],
+    type: 'tasks',            // "tasks" | "expenses"
+    template: 'kanban-basic', // UI значение; "cross-team" мапим на backend-safe
+    allowed_roles: ['admin'], // UI-стейт (snake) -> на бэк пойдёт allowedRoles (camel)
     description: '',
     settings: {
       assignee_enabled: true,
       due_dates_enabled: true,
       priority_enabled: true,
-      tags_enabled: true
-    }
+      tags_enabled: true,
+    },
   });
+
   const [columns, setColumns] = useState([
     { key: 'BACKLOG', name: 'Backlog', order: 1 },
     { key: 'IN_PROGRESS', name: 'In Progress', order: 2 },
     { key: 'REVIEW', name: 'Review', order: 3 },
-    { key: 'DONE', name: 'Done', order: 4 }
+    { key: 'DONE', name: 'Done', order: 4 },
   ]);
-  const [loading, setLoading] = useState(false);
 
+  const [loading, setLoading] = useState(false);
   const [availableRoles, setAvailableRoles] = useState(['admin', 'buyer', 'designer', 'tech']);
-useEffect(() => {
-  (async () => {
-    try {
-      const r = await rolesAPI.list();
-      const arr = (r.data || [])
-        .filter(x => x.isActive)
-        .map(x => String(x.key || '').toLowerCase())
-        .filter(Boolean);
-      if (arr.length) setAvailableRoles(arr);
-    } catch {
-      // молча оставляем дефолтные 4 роли
-    }
-  })();
-}, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await rolesAPI.list(); // GET /api/admin/roles
+        const arr = (r?.data || [])
+          .filter(x => x.isActive !== false)
+          .map(x => String(x.key || '').toLowerCase())
+          .filter(Boolean);
+        if (arr.length) setAvailableRoles(arr);
+      } catch {
+        // оставляем дефолтные
+      }
+    })();
+  }, []);
 
   const boardTypes = [
-    { 
-      value: 'tasks', 
-      label: 'Task Board', 
-      description: 'Manage tasks and workflows',
-      icon: '📋'
-    },
-    { 
-      value: 'expenses', 
-      label: 'Expense Board', 
-      description: 'Track expenses and approvals',
-      icon: '💰'
-    }
+    { value: 'tasks', label: 'Task Board', description: 'Manage tasks and workflows', icon: '📋' },
+    { value: 'expenses', label: 'Expense Board', description: 'Track expenses and approvals', icon: '💰' },
   ];
 
   const templates = [
-    { 
-      value: 'kanban-basic', 
+    {
+      value: 'kanban-basic',
       label: 'Basic Kanban',
       description: 'Simple workflow for general tasks',
       columns: [
         { key: 'BACKLOG', name: 'Backlog', order: 1 },
         { key: 'IN_PROGRESS', name: 'In Progress', order: 2 },
         { key: 'REVIEW', name: 'Review', order: 3 },
-        { key: 'DONE', name: 'Done', order: 4 }
-      ]
+        { key: 'DONE', name: 'Done', order: 4 },
+      ],
     },
-    { 
-      value: 'kanban-tj-tech', 
+    {
+      value: 'kanban-tj-tech',
       label: 'Tech Workflow',
       description: 'Development workflow with code review',
       columns: [
@@ -94,11 +78,11 @@ useEffect(() => {
         { key: 'IN_DEV', name: 'In Development', order: 2 },
         { key: 'CODE_REVIEW', name: 'Code Review', order: 3 },
         { key: 'TESTING', name: 'Testing', order: 4 },
-        { key: 'DONE', name: 'Done', order: 5 }
-      ]
+        { key: 'DONE', name: 'Done', order: 5 },
+      ],
     },
-    { 
-      value: 'cross-team', 
+    {
+      value: 'cross-team',
       label: 'Cross-Team Board',
       description: 'For teams that route work to other departments',
       columns: [
@@ -106,125 +90,154 @@ useEffect(() => {
         { key: 'IN_PROGRESS', name: 'In Progress', order: 2 },
         { key: 'TO_TECH', name: 'To Tech', order: 3 },
         { key: 'TO_DESIGNERS', name: 'To Designers', order: 4 },
-        { key: 'DONE', name: 'Done', order: 5 }
-      ]
+        { key: 'DONE', name: 'Done', order: 5 },
+      ],
     },
-    { 
-      value: 'empty', 
-      label: 'Empty Board',
-      description: 'Start with no columns',
-      columns: []
-    }
+    { value: 'empty', label: 'Empty Board', description: 'Start with no columns', columns: [] },
   ];
+
+  // UI -> backend mapping for template
+  const mapTemplateForBackend = (value) => {
+    if (value === 'cross-team') return 'kanban-basic'; // на бэке такого enum нет
+    return value; // 'kanban-basic' | 'kanban-tj-tech' | 'empty'
+  };
 
   const handleTemplateSelect = (templateValue) => {
     const template = templates.find(t => t.value === templateValue);
-    setBoardData({ ...boardData, template: templateValue });
+    setBoardData(prev => ({ ...prev, template: templateValue }));
     setColumns(template?.columns || []);
   };
 
   const toggleRole = (role) => {
-    const currentRoles = boardData.allowed_roles;
-    const updatedRoles = currentRoles.includes(role)
-      ? currentRoles.filter(r => r !== role)
-      : [...currentRoles, role];
-    
-    setBoardData({ ...boardData, allowed_roles: updatedRoles });
+    setBoardData(prev => {
+      const has = prev.allowed_roles.includes(role);
+      return {
+        ...prev,
+        allowed_roles: has
+          ? prev.allowed_roles.filter(r => r !== role)
+          : [...prev.allowed_roles, role],
+      };
+    });
   };
 
   const addColumn = () => {
-    const newColumn = {
-      key: `COL_${columns.length + 1}`,
-      name: `Column ${columns.length + 1}`,
-      order: columns.length + 1
-    };
-    setColumns([...columns, newColumn]);
+    const next = columns.length + 1;
+    setColumns(prev => [
+      ...prev,
+      { key: `COL_${next}`, name: `Column ${next}`, order: next },
+    ]);
   };
 
   const updateColumn = (index, field, value) => {
-    const updatedColumns = [...columns];
-    updatedColumns[index][field] = value;
-    if (field === 'name' && !updatedColumns[index].key.startsWith('COL_')) {
-      updatedColumns[index].key = value.toUpperCase().replace(/\s+/g, '_');
-    }
-    setColumns(updatedColumns);
+    setColumns(prev => {
+      const updated = [...prev];
+      updated[index][field] = value;
+      if (field === 'name' && !updated[index].key.startsWith('COL_')) {
+        updated[index].key = String(value).toUpperCase().replace(/\s+/g, '_');
+      }
+      return updated;
+    });
   };
 
   const removeColumn = (index) => {
-    const updatedColumns = columns.filter((_, i) => i !== index);
-    setColumns(updatedColumns.map((col, i) => ({ ...col, order: i + 1 })));
+    setColumns(prev =>
+      prev.filter((_, i) => i !== index).map((col, i) => ({ ...col, order: i + 1 }))
+    );
   };
 
   const handleCreateBoard = async () => {
-  if (!boardData.name || !boardData.key) {
-    toast.error('Board name and key are required');
-    return;
-  }
-  if (boardData.allowed_roles.length === 0) {
-    toast.error('At least one role must be selected');
-    return;
-  }
-
-  setLoading(true);
-  try {
-    // аккуратно собираем payload в формате бэка (camelCase)
-    const payload = {
-      name: boardData.name,
-      key: String(boardData.key).toUpperCase(),
-      type: boardData.type,
-      // важное: allowed_roles (snake) -> allowedRoles (camel)
-      allowedRoles: boardData.allowed_roles,
-      description: boardData.description
-      // template можно не отправлять — на бэке есть дефолт.
-      // если хочешь принудительно — раскомментируй следующую строку, убедившись что значение валидно под enum на бэке.
-      // template: boardData.template,
-    };
-
-    // создаём доску
-    const response = await boardsAPI.create(payload);
-    const createdBoard = response.data;
-
-    // создаём колонки (если выбраны в мастере/шаблоне)
-    if (columns.length > 0) {
-      for (const column of columns) {
-        await columnsAPI.create(createdBoard.id, {
-          key: String(column.key || '').toUpperCase(),
-          name: column.name,
-          order: column.order
-        });
-      }
+    if (!boardData.name || !boardData.key) {
+      toast.error('Board name and key are required');
+      return;
+    }
+    if (boardData.allowed_roles.length === 0) {
+      toast.error('At least one role must be selected');
+      return;
     }
 
-    toast.success('Board created successfully');
-    onBoardCreated(createdBoard);
-    onOpenChange(false);
+    setLoading(true);
+    try {
+      const payload = {
+        name: boardData.name,
+        key: String(boardData.key).toUpperCase(),
+        type: boardData.type, // "tasks" | "expenses"
+        template: mapTemplateForBackend(boardData.template),
+        // на бэк camelCase + lower-case
+        allowedRoles: boardData.allowed_roles.map(r => String(r).toLowerCase()),
+        description: boardData.description,
+        // если у тебя Joi ожидает settings — отправляем camelCase с дефолтами
+        settings: {
+          assigneeEnabled: !!boardData.settings.assignee_enabled,
+          dueDatesEnabled: !!boardData.settings.due_dates_enabled,
+          priorityEnabled: !!boardData.settings.priority_enabled,
+          tagsEnabled: !!boardData.settings.tags_enabled,
+          commentsEnabled: false,
+          timeTrackingEnabled: false,
+        },
+        // members/owners/allowedGroupIds можно не присылать — но на всякий:
+        members: [],
+        owners: [],
+        allowedGroupIds: [],
+      };
 
-    // сброс формы
-    setStep(1);
-    setBoardData({
-      name: '',
-      key: '',
-      type: 'tasks',
-      template: 'kanban-basic',
-      allowed_roles: ['admin'],
-      description: '',
-      settings: {
-        assignee_enabled: true,
-        due_dates_enabled: true,
-        priority_enabled: true,
-        tags_enabled: true
+      const response = await boardsAPI.create(payload); // POST /api/boards
+      const createdBoard = response.data;
+
+      // создать колонки (если есть)
+      if (columns.length > 0) {
+        for (const column of columns) {
+          await columnsAPI.create(createdBoard.id, {
+            key: String(column.key || '').toUpperCase(),
+            name: column.name,
+            order: column.order,
+          });
+        }
       }
-    });
-    setColumns([]);
-  } catch (error) {
-    // прокидываем реальное сообщение бэка если есть
-    const msg = error?.response?.data?.error || 'Failed to create board';
-    toast.error(msg);
-    console.error('Board creation error:', error);
-  } finally {
-    setLoading(false);
-  }
-};
+
+      toast.success('Board created successfully');
+      onBoardCreated?.(createdBoard);
+      onOpenChange?.(false);
+
+      // reset
+      setStep(1);
+      setBoardData({
+        name: '',
+        key: '',
+        type: 'tasks',
+        template: 'kanban-basic',
+        allowed_roles: ['admin'],
+        description: '',
+        settings: {
+          assignee_enabled: true,
+          due_dates_enabled: true,
+          priority_enabled: true,
+          tags_enabled: true,
+        },
+      });
+      setColumns([]);
+    } catch (error) {
+      const resp = error?.response;
+      const msg = resp?.data?.error || resp?.data?.message || error?.message || 'Failed to create board';
+      toast.error(msg);
+      // подробно логируем для дебага
+      console.error('Board creation error:', {
+        status: resp?.status,
+        statusText: resp?.statusText,
+        data: resp?.data,
+        payloadTried: {
+          ...{
+            name: boardData.name,
+            key: String(boardData.key).toUpperCase(),
+            type: boardData.type,
+            template: mapTemplateForBackend(boardData.template),
+            allowedRoles: boardData.allowed_roles.map(r => String(r).toLowerCase()),
+          },
+        },
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const renderStep1 = () => (
     <div className="space-y-6">
@@ -238,11 +251,11 @@ useEffect(() => {
               value={boardData.name}
               onChange={(e) => {
                 const name = e.target.value;
-                setBoardData({ 
-                  ...boardData, 
+                setBoardData(prev => ({
+                  ...prev,
                   name,
-                  key: boardData.key || name.toUpperCase().replace(/\s+/g, '').slice(0, 10)
-                });
+                  key: prev.key || name.toUpperCase().replace(/\s+/g, '').slice(0, 10),
+                }));
               }}
               placeholder="e.g., Marketing Tasks"
               className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white dark:placeholder-gray-200"
@@ -254,7 +267,7 @@ useEffect(() => {
             <Input
               id="board-key"
               value={boardData.key}
-              onChange={(e) => setBoardData({ ...boardData, key: e.target.value.toUpperCase() })}
+              onChange={(e) => setBoardData(prev => ({ ...prev, key: e.target.value.toUpperCase() }))}
               placeholder="e.g., MARK"
               maxLength={10}
               className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white dark:placeholder-gray-200"
@@ -269,7 +282,7 @@ useEffect(() => {
             <Textarea
               id="board-description"
               value={boardData.description}
-              onChange={(e) => setBoardData({ ...boardData, description: e.target.value })}
+              onChange={(e) => setBoardData(prev => ({ ...prev, description: e.target.value }))}
               placeholder="Describe what this board is for..."
               rows={3}
               className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white dark:placeholder-gray-200"
@@ -282,14 +295,14 @@ useEffect(() => {
         <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Board Type</h3>
         <div className="grid grid-cols-1 gap-3">
           {boardTypes.map(type => (
-            <Card 
+            <Card
               key={type.value}
               className={`cursor-pointer transition-all dark:bg-gray-500 dark:border-gray-400 ${
-                boardData.type === type.value 
-                  ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-800/30' 
+                boardData.type === type.value
+                  ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-800/30'
                   : 'hover:bg-gray-50 dark:hover:bg-gray-400'
               }`}
-              onClick={() => setBoardData({ ...boardData, type: type.value })}
+              onClick={() => setBoardData(prev => ({ ...prev, type: type.value }))}
             >
               <CardContent className="p-4">
                 <div className="flex items-center space-x-3">
@@ -298,9 +311,7 @@ useEffect(() => {
                     <h4 className="font-medium text-gray-900 dark:text-white">{type.label}</h4>
                     <p className="text-sm text-gray-600 dark:text-gray-200">{type.description}</p>
                   </div>
-                  {boardData.type === type.value && (
-                    <CheckCircle className="w-5 h-5 text-blue-600 ml-auto" />
-                  )}
+                  {boardData.type === type.value && <CheckCircle className="w-5 h-5 text-blue-600 ml-auto" />}
                 </div>
               </CardContent>
             </Card>
@@ -316,11 +327,11 @@ useEffect(() => {
         <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-white">Choose Template</h3>
         <div className="grid grid-cols-1 gap-3">
           {templates.map(template => (
-            <Card 
+            <Card
               key={template.value}
               className={`cursor-pointer transition-all dark:bg-gray-500 dark:border-gray-400 ${
-                boardData.template === template.value 
-                  ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-800/30' 
+                boardData.template === template.value
+                  ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-800/30'
                   : 'hover:bg-gray-50 dark:hover:bg-gray-400'
               }`}
               onClick={() => handleTemplateSelect(template.value)}
@@ -331,21 +342,20 @@ useEffect(() => {
                     <h4 className="font-medium text-gray-900 dark:text-white">{template.label}</h4>
                     <p className="text-sm text-gray-600 dark:text-gray-200 mb-2">{template.description}</p>
                     <div className="flex flex-wrap gap-1">
-                      {template.columns?.map((col, i) => (
-                        <Badge key={i} variant="outline" className="text-xs dark:border-gray-300 dark:text-white">
-                          {col.name}
-                        </Badge>
-                      ))}
-                      {template.columns?.length === 0 && (
+                      {template.columns?.length ? (
+                        template.columns.map((col, i) => (
+                          <Badge key={i} variant="outline" className="text-xs dark:border-gray-300 dark:text-white">
+                            {col.name}
+                          </Badge>
+                        ))
+                      ) : (
                         <Badge variant="outline" className="text-xs dark:border-gray-300 dark:text-white">
                           No columns
                         </Badge>
                       )}
                     </div>
                   </div>
-                  {boardData.template === template.value && (
-                    <CheckCircle className="w-5 h-5 text-blue-600" />
-                  )}
+                  {boardData.template === template.value && <CheckCircle className="w-5 h-5 text-blue-600" />}
                 </div>
               </CardContent>
             </Card>
@@ -361,19 +371,19 @@ useEffect(() => {
             {availableRoles.map(role => (
               <Badge
                 key={role}
-                variant={boardData.allowed_roles.includes(role) ? "default" : "outline"}
-                className={`cursor-pointer ${boardData.allowed_roles.includes(role) 
-                  ? 'bg-blue-600 text-white' 
-                  : 'border-gray-300 dark:border-gray-300 dark:text-white dark:hover:bg-gray-400'}`}
+                variant={boardData.allowed_roles.includes(role) ? 'default' : 'outline'}
+                className={`cursor-pointer ${
+                  boardData.allowed_roles.includes(role)
+                    ? 'bg-blue-600 text-white'
+                    : 'border-gray-300 dark:border-gray-300 dark:text-white dark:hover:bg-gray-400'
+                }`}
                 onClick={() => toggleRole(role)}
               >
                 {role}
               </Badge>
             ))}
           </div>
-          <p className="text-xs text-gray-500 dark:text-gray-200 mt-1">
-            Select which roles can access this board
-          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-200 mt-1">Select which roles can access this board</p>
         </div>
       </div>
     </div>
@@ -409,8 +419,12 @@ useEffect(() => {
               </Button>
             </div>
           ))}
-          
-          <Button onClick={addColumn} variant="outline" className="w-full dark:bg-gray-500 dark:border-gray-400 dark:text-white dark:hover:bg-gray-400">
+
+          <Button
+            onClick={addColumn}
+            variant="outline"
+            className="w-full dark:bg-gray-500 dark:border-gray-400 dark:text-white dark:hover:bg-gray-400"
+          >
             <Plus className="w-4 h-4 mr-2" />
             Add Column
           </Button>
@@ -451,9 +465,7 @@ useEffect(() => {
                 {stepNumber}
               </div>
               {stepNumber < 3 && (
-                <div className={`w-12 h-0.5 mx-2 ${
-                  step > stepNumber ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-400'
-                }`} />
+                <div className={`w-12 h-0.5 mx-2 ${step > stepNumber ? 'bg-blue-600' : 'bg-gray-200 dark:bg-gray-400'}`} />
               )}
             </div>
           ))}
@@ -468,20 +480,17 @@ useEffect(() => {
         <div className="flex justify-between pt-6 border-t dark:border-gray-400">
           <Button
             variant="outline"
-            onClick={() => setStep(Math.max(1, step - 1))}
+            onClick={() => setStep(prev => Math.max(1, prev - 1))}
             disabled={step === 1}
             className="dark:bg-gray-500 dark:border-gray-400 dark:text-white dark:hover:bg-gray-400"
           >
             Previous
           </Button>
-          
+
           {step < 3 ? (
             <Button
-              onClick={() => setStep(step + 1)}
-              disabled={
-                (step === 1 && (!boardData.name || !boardData.key)) ||
-                (step === 2 && boardData.allowed_roles.length === 0)
-              }
+              onClick={() => setStep(prev => prev + 1)}
+              disabled={(step === 1 && (!boardData.name || !boardData.key)) || (step === 2 && boardData.allowed_roles.length === 0)}
               className="bg-blue-600 hover:bg-blue-700 text-white"
             >
               Next

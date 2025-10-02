@@ -1,128 +1,193 @@
-import React, { useState, useEffect } from 'react';
+// src/components/ExpensesDashboard.jsx
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { EXPENSE_CATEGORIES, getCategoryDisplayName } from './CategorySelector';
-import { tasksAPI } from '../lib/api';
+import { EXPENSE_CATEGORIES } from './CategorySelector';
+import { boardsAPI, columnsAPI, tasksAPI } from '../lib/api';
 import { toast } from 'sonner';
-import { 
-  DollarSign, 
-  TrendingUp, 
-  Calendar, 
-  PieChart, 
+import {
+  DollarSign,
+  TrendingUp,
+  Calendar,
+  PieChart,
   BarChart3,
   Filter,
-  Download
+  Download,
 } from 'lucide-react';
+
+const BOARD_KEY_EXPENSES = 'EXP';
 
 const ExpensesDashboard = ({ user }) => {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
+
   const [filters, setFilters] = useState({
-    dateRange: 'current-month',
-    category: 'all',
-    status: 'all'
+    dateRange: 'current-month', // all | current-month | last-month | current-year
+    category: 'all',            // 'all' | <MAIN_CATEGORY>
   });
 
-  useEffect(() => {
-    fetchExpenses();
-  }, [filters]);
+  const [columnsById, setColumnsById] = useState({});
+  const [bootstrapDone, setBootstrapDone] = useState(false);
 
-  const fetchExpenses = async () => {
+  // --- Access check (оставляю как у тебя) ---
+  const noAccess =
+    !user ||
+    (!Array.isArray(user.roles)) ||
+    (!user.roles.includes('admin') && !user.roles.includes('main_admin'));
+
+  // --- Bootstrap: получить id доски и её колонки ---
+  const bootstrap = useCallback(async () => {
+    try {
+      // 1) Берём доску по ключу
+      const { data: board } = await boardsAPI.getByKey(BOARD_KEY_EXPENSES);
+
+      // 2) Берём колонки по board.id
+      const { data: cols } = await columnsAPI.getByBoardId(board.id);
+
+      // 3) Делаем быстрый справочник id → name
+      const map = {};
+      (cols || []).forEach((c) => {
+        if (c?.id) map[c.id] = c.name || c.key || c.id;
+      });
+      setColumnsById(map);
+      setBootstrapDone(true);
+    } catch (e) {
+      console.error('ExpensesDashboard bootstrap error:', e);
+      toast.error('Failed to bootstrap expenses board');
+      setBootstrapDone(true); // позволим UI жить даже без колонок
+    }
+  }, []);
+
+  useEffect(() => {
+    bootstrap();
+  }, [bootstrap]);
+
+  // --- Загрузка расходов (tasks с amount) ---
+  const fetchExpenses = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await tasksAPI.getByBoard('EXPENSES');
-      setExpenses(response.data.filter(task => task.amount));
+      // ВАЖНО: ключ именно 'EXP', не 'EXPENSES'
+      const res = await tasksAPI.getByBoard(BOARD_KEY_EXPENSES);
+      const list = Array.isArray(res.data) ? res.data : [];
+      setExpenses(list.filter((t) => !!t.amount));
     } catch (error) {
+      console.error('Load expenses error:', error);
       toast.error('Failed to load expenses data');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  // Filter expenses based on current filters
-  const filteredExpenses = expenses.filter(expense => {
-    // Category filter
-    if (filters.category !== 'all' && !expense.category?.startsWith(filters.category)) {
-      return false;
+  // Загружаем расходы после bootstrap и при изменении фильтров (категории/диапазона)
+  useEffect(() => {
+    if (bootstrapDone) {
+      fetchExpenses();
     }
+  }, [bootstrapDone, fetchExpenses, filters.dateRange, filters.category]);
 
-    // Date range filter
-    const expenseDate = new Date(expense.created_at);
+  // --- Фильтрация по текущим фильтрам ---
+  const filteredExpenses = useMemo(() => {
+    if (!Array.isArray(expenses)) return [];
+
     const now = new Date();
-    
-    switch (filters.dateRange) {
-      case 'current-month':
-        return expenseDate.getMonth() === now.getMonth() && 
-               expenseDate.getFullYear() === now.getFullYear();
-      case 'last-month':
-        const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1);
-        return expenseDate.getMonth() === lastMonth.getMonth() && 
-               expenseDate.getFullYear() === lastMonth.getFullYear();
-      case 'current-year':
-        return expenseDate.getFullYear() === now.getFullYear();
-      default:
-        return true;
-    }
-  });
+    const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
-  // Calculate statistics
-  const totalAmount = filteredExpenses.reduce((sum, expense) => sum + (expense.amount || 0), 0);
-  const averageExpense = filteredExpenses.length > 0 ? totalAmount / filteredExpenses.length : 0;
-  const expenseCount = filteredExpenses.length;
+    return expenses.filter((expense) => {
+      // Категория
+      if (filters.category !== 'all') {
+        const cat = String(expense.category || '');
+        if (!cat.startsWith(filters.category)) return false;
+      }
 
-  // Group by categories
-  const categoriesData = {};
-  filteredExpenses.forEach(expense => {
-    if (expense.category) {
-      const [mainCategory] = expense.category.split('.');
-      if (!categoriesData[mainCategory]) {
-        categoriesData[mainCategory] = {
-          name: EXPENSE_CATEGORIES[mainCategory]?.name || mainCategory,
+      // Дата
+      const createdAt = expense.created_at ? new Date(expense.created_at) : null;
+      if (!createdAt) return true;
+
+      switch (filters.dateRange) {
+        case 'current-month':
+          return (
+            createdAt.getMonth() === now.getMonth() &&
+            createdAt.getFullYear() === now.getFullYear()
+          );
+        case 'last-month':
+          return (
+            createdAt.getMonth() === lastMonthDate.getMonth() &&
+            createdAt.getFullYear() === lastMonthDate.getFullYear()
+          );
+        case 'current-year':
+          return createdAt.getFullYear() === now.getFullYear();
+        case 'all':
+        default:
+          return true;
+      }
+    });
+  }, [expenses, filters]);
+
+  // --- Агрегации ---
+  const { totalAmount, averageExpense, expenseCount } = useMemo(() => {
+    const total = filteredExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+    const count = filteredExpenses.length;
+    return {
+      totalAmount: total,
+      averageExpense: count > 0 ? total / count : 0,
+      expenseCount: count,
+    };
+  }, [filteredExpenses]);
+
+  const categoriesData = useMemo(() => {
+    const result = {};
+    filteredExpenses.forEach((e) => {
+      const cat = String(e.category || '');
+      if (!cat) return;
+
+      const [main, sub] = cat.split('.');
+      if (!result[main]) {
+        result[main] = {
+          name: EXPENSE_CATEGORIES[main]?.name || main,
           total: 0,
           count: 0,
-          subcategories: {}
+          subcategories: {},
         };
       }
-      categoriesData[mainCategory].total += expense.amount;
-      categoriesData[mainCategory].count += 1;
+      result[main].total += e.amount || 0;
+      result[main].count += 1;
 
-      // Subcategories
-      const [, subCategory] = expense.category.split('.');
-      if (subCategory) {
-        if (!categoriesData[mainCategory].subcategories[subCategory]) {
-          categoriesData[mainCategory].subcategories[subCategory] = {
-            name: EXPENSE_CATEGORIES[mainCategory]?.subcategories[subCategory] || subCategory,
+      if (sub) {
+        if (!result[main].subcategories[sub]) {
+          result[main].subcategories[sub] = {
+            name: EXPENSE_CATEGORIES[main]?.subcategories?.[sub] || sub,
             total: 0,
-            count: 0
+            count: 0,
           };
         }
-        categoriesData[mainCategory].subcategories[subCategory].total += expense.amount;
-        categoriesData[mainCategory].subcategories[subCategory].count += 1;
+        result[main].subcategories[sub].total += e.amount || 0;
+        result[main].subcategories[sub].count += 1;
       }
-    }
-  });
+    });
+    return result;
+  }, [filteredExpenses]);
 
-  // Group by status (columns)
-  const statusData = {};
-  filteredExpenses.forEach(expense => {
-    const status = expense.column_id; // This will be mapped to column names
-    if (!statusData[status]) {
-      statusData[status] = {
-        total: 0,
-        count: 0
-      };
-    }
-    statusData[status].total += expense.amount;
-    statusData[status].count += 1;
-  });
+  const statusData = useMemo(() => {
+    const result = {};
+    filteredExpenses.forEach((e) => {
+      const statusKey = e.column_id || 'unknown';
+      if (!result[statusKey]) result[statusKey] = { total: 0, count: 0 };
+      result[statusKey].total += e.amount || 0;
+      result[statusKey].count += 1;
+    });
+    return result;
+  }, [filteredExpenses]);
 
-  if (!user || (!user.roles.includes('admin') && !user.roles.includes('main_admin'))) {
+  // --- Рендеры ---
+  if (noAccess) {
     return (
       <div className="p-8 text-center">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">Access Denied</h1>
-        <p className="text-gray-600 dark:text-gray-400">Only administrators can access the expenses dashboard.</p>
+        <p className="text-gray-600 dark:text-gray-400">
+          Only administrators can access the expenses dashboard.
+        </p>
       </div>
     );
   }
@@ -153,15 +218,26 @@ const ExpensesDashboard = ({ user }) => {
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Date Range
               </label>
-              <Select value={filters.dateRange} onValueChange={(value) => setFilters({...filters, dateRange: value})}>
+              <Select
+                value={filters.dateRange}
+                onValueChange={(value) => setFilters((f) => ({ ...f, dateRange: value }))}
+              >
                 <SelectTrigger className="dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="dark:bg-gray-700 dark:border-gray-600">
-                  <SelectItem value="all" className="dark:text-gray-200">All Time</SelectItem>
-                  <SelectItem value="current-month" className="dark:text-gray-200">Current Month</SelectItem>
-                  <SelectItem value="last-month" className="dark:text-gray-200">Last Month</SelectItem>
-                  <SelectItem value="current-year" className="dark:text-gray-200">Current Year</SelectItem>
+                  <SelectItem value="all" className="dark:text-gray-200">
+                    All Time
+                  </SelectItem>
+                  <SelectItem value="current-month" className="dark:text-gray-200">
+                    Current Month
+                  </SelectItem>
+                  <SelectItem value="last-month" className="dark:text-gray-200">
+                    Last Month
+                  </SelectItem>
+                  <SelectItem value="current-year" className="dark:text-gray-200">
+                    Current Year
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -170,12 +246,17 @@ const ExpensesDashboard = ({ user }) => {
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Category
               </label>
-              <Select value={filters.category} onValueChange={(value) => setFilters({...filters, category: value})}>
+              <Select
+                value={filters.category}
+                onValueChange={(value) => setFilters((f) => ({ ...f, category: value }))}
+              >
                 <SelectTrigger className="dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="dark:bg-gray-700 dark:border-gray-600">
-                  <SelectItem value="all" className="dark:text-gray-200">All Categories</SelectItem>
+                  <SelectItem value="all" className="dark:text-gray-200">
+                    All Categories
+                  </SelectItem>
                   {Object.entries(EXPENSE_CATEGORIES).map(([key, category]) => (
                     <SelectItem key={key} value={key} className="dark:text-gray-200">
                       {category.name}
@@ -188,7 +269,7 @@ const ExpensesDashboard = ({ user }) => {
             <div className="flex items-end">
               <Button onClick={fetchExpenses} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white">
                 <Download className="w-4 h-4 mr-2" />
-                Export Data
+                Refresh / Export Data
               </Button>
             </div>
           </div>
@@ -205,9 +286,7 @@ const ExpensesDashboard = ({ user }) => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-green-600">
-              ₽{totalAmount.toLocaleString()}
-            </div>
+            <div className="text-3xl font-bold text-green-600">₽{totalAmount.toLocaleString()}</div>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
               {expenseCount} expense{expenseCount !== 1 ? 's' : ''}
             </p>
@@ -225,9 +304,7 @@ const ExpensesDashboard = ({ user }) => {
             <div className="text-3xl font-bold text-blue-600">
               ₽{Math.round(averageExpense).toLocaleString()}
             </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Per expense item
-            </p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Per expense item</p>
           </CardContent>
         </Card>
 
@@ -245,9 +322,7 @@ const ExpensesDashboard = ({ user }) => {
               {filters.dateRange === 'last-month' && 'Last Month'}
               {filters.dateRange === 'current-year' && 'Current Year'}
             </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Selected time range
-            </p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Selected time range</p>
           </CardContent>
         </Card>
       </div>
@@ -276,13 +351,13 @@ const ExpensesDashboard = ({ user }) => {
                     ₽{data.total.toLocaleString()}
                   </div>
                   <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mt-2">
-                    <div 
-                      className="bg-green-600 h-2 rounded-full" 
-                      style={{ width: `${(data.total / totalAmount) * 100}%` }}
-                    ></div>
+                    <div
+                      className="bg-green-600 h-2 rounded-full"
+                      style={{ width: `${totalAmount ? (data.total / totalAmount) * 100 : 0}%` }}
+                    />
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    {((data.total / totalAmount) * 100).toFixed(1)}% of total
+                    {totalAmount ? ((data.total / totalAmount) * 100).toFixed(1) : '0.0'}% of total
                   </p>
                 </div>
               ))}
@@ -307,7 +382,10 @@ const ExpensesDashboard = ({ user }) => {
                   </h3>
                   <div className="space-y-2 ml-4">
                     {Object.entries(mainData.subcategories).map(([subKey, subData]) => (
-                      <div key={subKey} className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                      <div
+                        key={subKey}
+                        className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded"
+                      >
                         <span className="text-sm text-gray-700 dark:text-gray-300">{subData.name}</span>
                         <div className="text-right">
                           <div className="font-semibold text-gray-900 dark:text-gray-100">
@@ -323,6 +401,30 @@ const ExpensesDashboard = ({ user }) => {
                 </div>
               ))}
             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* (опционально) Статусы/колонки по суммам */}
+      <div className="mt-8">
+        <Card className="dark:bg-gray-800 dark:border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-900 dark:text-gray-100">Status (by Column)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {Object.entries(statusData).map(([colId, stat]) => (
+              <div key={colId} className="flex items-center justify-between p-2 border rounded dark:border-gray-700">
+                <span className="text-sm text-gray-700 dark:text-gray-300">
+                  {columnsById[colId] || colId}
+                </span>
+                <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  ₽{stat.total.toLocaleString()} ({stat.count})
+                </span>
+              </div>
+            ))}
+            {!Object.keys(statusData).length && (
+              <div className="text-sm text-gray-500 dark:text-gray-400">No data for the selected period.</div>
+            )}
           </CardContent>
         </Card>
       </div>

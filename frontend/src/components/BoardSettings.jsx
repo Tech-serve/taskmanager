@@ -8,17 +8,15 @@ import { Switch } from './ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
-import { boardsAPI, columnsAPI } from '../lib/api';
+import { boardsAPI, columnsAPI, rolesAPI } from '../lib/api';
 import { toast } from 'sonner';
-import { 
-  Settings, 
-  Plus, 
-  Trash2, 
-  Users, 
-  Eye, 
-  Lock,
+import {
+  Settings,
+  Plus,
+  Trash2,
+  Eye,
   Save,
-  X
+  X,
 } from 'lucide-react';
 
 const BoardSettings = ({ board, onUpdate, onClose }) => {
@@ -36,37 +34,63 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
       comments_enabled: board?.settings?.comments_enabled ?? false,
       time_tracking_enabled: board?.settings?.time_tracking_enabled ?? false,
     },
-    allowed_roles: board?.allowed_roles || [],
+    // сохраняем snake_case, как у тебя было
+    allowed_roles: board?.allowed_roles || board?.allowedRoles || [],
     allowed_group_ids: board?.allowed_group_ids || [],
     members: board?.members || [],
-    owners: board?.owners || []
+    owners: board?.owners || [],
   });
-  
+
   const [columns, setColumns] = useState([]);
   const [newColumn, setNewColumn] = useState({ key: '', name: '', order: 0 });
   const [loading, setLoading] = useState(false);
 
-  const availableRoles = ['admin', 'buyer', 'designer', 'tech'];
+  // << новый единый источник ролей
+  const [allRoles, setAllRoles] = useState([]);
+
   const boardTypes = [
-    { value: 'tasks', label: 'Task Board' },
-    { value: 'expenses', label: 'Expense Board' }
+    { value: 'tasks',    label: 'Task Board' },
+    { value: 'expenses', label: 'Expense Board' },
   ];
+
   const templates = [
-    { value: 'kanban-basic', label: 'Basic Kanban' },
+    { value: 'kanban-basic',  label: 'Basic Kanban' },
     { value: 'kanban-tj-tech', label: 'Tech Workflow' },
-    { value: 'empty', label: 'Empty Board' }
+    { value: 'empty',          label: 'Empty Board' },
   ];
 
   useEffect(() => {
-    if (board?.id) {
-      fetchColumns();
-    }
-  }, [board]);
+    if (board?.id) fetchColumns();
+  }, [board?.id]);
+
+  // подхватываем изменения внешнего board, если он обновится извне
+  useEffect(() => {
+    setBoardData((prev) => ({
+      ...prev,
+      allowed_roles: board?.allowed_roles || board?.allowedRoles || [],
+    }));
+  }, [board?.allowed_roles, board?.allowedRoles]);
+
+  // подгружаем роли из /admin/roles
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const r = await rolesAPI.list();
+        const items = (r.data || []).filter((x) => x.isActive !== false);
+        if (mounted) setAllRoles(items);
+      } catch {
+        // тихий фолбэк, UI не падает
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const fetchColumns = async () => {
     try {
       const response = await columnsAPI.getByBoardId(board.id);
-      setColumns(response.data.sort((a, b) => a.order - b.order));
+      const sorted = [...(response.data || [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      setColumns(sorted);
     } catch (error) {
       console.error('Failed to fetch columns:', error);
     }
@@ -75,9 +99,15 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   const handleSaveBoard = async () => {
     setLoading(true);
     try {
-      // Update board settings via API
-      await boardsAPI.update(board.id, boardData);
-      onUpdate(boardData);
+      // отправляем оба ключа для совместимости camel/snake
+      const payload = {
+        ...boardData,
+        allowedRoles: boardData.allowed_roles,
+        allowed_roles: boardData.allowed_roles,
+      };
+
+      await boardsAPI.update(board.id, payload);
+      onUpdate?.(payload);
       toast.success('Board settings updated successfully');
     } catch (error) {
       toast.error('Failed to update board settings');
@@ -91,13 +121,8 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
       toast.error('Column name and key are required');
       return;
     }
-
     try {
-      const columnData = {
-        ...newColumn,
-        order: columns.length + 1
-      };
-      
+      const columnData = { ...newColumn, order: (columns?.length || 0) + 1 };
       await columnsAPI.create(board.id, columnData);
       await fetchColumns();
       setNewColumn({ key: '', name: '', order: 0 });
@@ -113,7 +138,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
       await fetchColumns();
       toast.success('Column deleted successfully');
     } catch (error) {
-      if (error.response?.status === 400) {
+      if (error?.response?.status === 400) {
         toast.error('Cannot delete column with tasks');
       } else {
         toast.error('Failed to delete column');
@@ -121,13 +146,12 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
     }
   };
 
-  const toggleRole = (role) => {
-    const currentRoles = boardData.allowed_roles;
-    const updatedRoles = currentRoles.includes(role)
-      ? currentRoles.filter(r => r !== role)
-      : [...currentRoles, role];
-    
-    setBoardData({ ...boardData, allowed_roles: updatedRoles });
+  const toggleRole = (roleKey) => {
+    setBoardData((prev) => {
+      const set = new Set(prev.allowed_roles);
+      set.has(roleKey) ? set.delete(roleKey) : set.add(roleKey);
+      return { ...prev, allowed_roles: Array.from(set) };
+    });
   };
 
   return (
@@ -139,11 +163,19 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Board Settings</h1>
         </div>
         <div className="flex items-center space-x-3">
-          <Button variant="outline" onClick={onClose} className="dark:bg-gray-500 dark:border-gray-400 dark:text-white dark:hover:bg-gray-400">
+          <Button
+            variant="outline"
+            onClick={onClose}
+            className="dark:bg-gray-500 dark:border-gray-400 dark:text-white dark:hover:bg-gray-400"
+          >
             <X className="w-4 h-4 mr-2" />
             Cancel
           </Button>
-          <Button onClick={handleSaveBoard} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white">
+          <Button
+            onClick={handleSaveBoard}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
             <Save className="w-4 h-4 mr-2" />
             {loading ? 'Saving...' : 'Save Changes'}
           </Button>
@@ -190,14 +222,21 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
 
             <div>
               <Label htmlFor="board-template" className="text-gray-700 dark:text-white">Template</Label>
-              <Select value={boardData.template} onValueChange={(value) => setBoardData({ ...boardData, template: value })}>
+              <Select
+                value={boardData.template}
+                onValueChange={(value) => setBoardData({ ...boardData, template: value })}
+              >
                 <SelectTrigger className="dark:bg-gray-400 dark:border-gray-300 dark:text-white">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="dark:bg-gray-500 dark:border-gray-400">
-                  {templates.map(template => (
-                    <SelectItem key={template.value} value={template.value} className="dark:text-white dark:hover:bg-gray-400">
-                      {template.label}
+                  {templates.map((t) => (
+                    <SelectItem
+                      key={t.value}
+                      value={t.value}
+                      className="dark:text-white dark:hover:bg-gray-400"
+                    >
+                      {t.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -215,7 +254,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
           </CardContent>
         </Card>
 
-        {/* Visibility Settings */}
+        {/* Visibility & Access */}
         <Card className="glass border-0 shadow-lg dark:bg-gray-500/50 dark:border-gray-400">
           <CardHeader>
             <CardTitle className="flex items-center space-x-2 text-gray-900 dark:text-white">
@@ -224,24 +263,41 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Allowed Roles from Roles collection */}
             <div>
               <Label className="text-sm font-medium text-gray-700 dark:text-white">Allowed Roles</Label>
-              <div className="flex flex-wrap gap-2 mt-2">
-                {availableRoles.map(role => (
-                  <Badge
-                    key={role}
-                    variant={boardData.allowed_roles.includes(role) ? "default" : "outline"}
-                    className={`cursor-pointer ${boardData.allowed_roles.includes(role) 
-                      ? 'bg-blue-600 text-white dark:bg-blue-500' 
-                      : 'border-gray-300 dark:border-gray-300 dark:text-white dark:hover:bg-gray-400'}`}
-                    onClick={() => toggleRole(role)}
-                  >
-                    {role}
-                  </Badge>
-                ))}
-              </div>
+
+              {allRoles.length === 0 ? (
+                <div className="text-sm text-gray-500 dark:text-gray-200 mt-2">
+                  No roles defined yet. Create roles in <b>Admin Settings → Roles</b>.
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {allRoles.map((r) => {
+                    const active = boardData.allowed_roles.includes(r.key);
+                    return (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => toggleRole(r.key)}
+                        className={
+                          'px-2.5 py-1.5 rounded-md text-sm border transition ' +
+                          (active
+                            ? 'bg-blue-600 text-white border-blue-600 dark:bg-blue-500'
+                            : 'bg-transparent text-gray-800 dark:text-white border-gray-300 dark:border-gray-300 hover:bg-gray-100 dark:hover:bg-gray-400/40')
+                        }
+                        title={r.description || r.name}
+                      >
+                        {r.name}
+                        <span className="opacity-70 ml-1 text-xs">({r.key})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <p className="text-xs text-gray-500 dark:text-gray-200 mt-1">
-                Click to toggle role access
+                Click to toggle role access. If empty — the board is visible to everyone.
               </p>
             </div>
 
@@ -266,16 +322,16 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             {Object.entries(boardData.settings).map(([key, value]) => (
               <div key={key} className="flex items-center justify-between">
                 <Label htmlFor={key} className="text-sm text-gray-700 dark:text-white">
-                  {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                  {key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
                 </Label>
                 <Switch
                   id={key}
-                  checked={value}
-                  onCheckedChange={(checked) => 
-                    setBoardData({
-                      ...boardData,
-                      settings: { ...boardData.settings, [key]: checked }
-                    })
+                  checked={!!value}
+                  onCheckedChange={(checked) =>
+                    setBoardData((prev) => ({
+                      ...prev,
+                      settings: { ...prev.settings, [key]: checked },
+                    }))
                   }
                 />
               </div>
@@ -292,7 +348,10 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             {/* Existing Columns */}
             <div className="space-y-2">
               {columns.map((column, index) => (
-                <div key={column.id} className="flex items-center justify-between p-2 border rounded dark:border-gray-400 bg-gray-50 dark:bg-gray-400/50">
+                <div
+                  key={column.id}
+                  className="flex items-center justify-between p-2 border rounded dark:border-gray-400 bg-gray-50 dark:bg-gray-400/50"
+                >
                   <div className="flex items-center space-x-2">
                     <span className="text-sm font-medium text-gray-700 dark:text-white">{index + 1}.</span>
                     <span className="text-gray-900 dark:text-white">{column.name}</span>

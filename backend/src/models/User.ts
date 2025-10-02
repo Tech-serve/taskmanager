@@ -1,5 +1,5 @@
 import mongoose, { Schema } from 'mongoose';
-import { IUser, Role, UserStatus } from '../types';
+import { IUser, Role, UserStatus, Department } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 const userSchema = new Schema<IUser>(
@@ -19,7 +19,7 @@ const userSchema = new Schema<IUser>(
     },
     passwordHash: {
       type: String,
-      required: false // Optional for invited users who haven't set password yet
+      required: false 
     },
     fullName: {
       type: String,
@@ -34,6 +34,11 @@ const userSchema = new Schema<IUser>(
       type: String,
       default: []
     }],
+    department: {
+      type: String,
+      enum: Object.values(Department),
+      required: false
+    },
     status: {
       type: String,
       enum: Object.values(UserStatus),
@@ -62,10 +67,10 @@ const userSchema = new Schema<IUser>(
   }
 );
 
-// Indexes
 userSchema.index({ email: 1 });
 userSchema.index({ id: 1 });
 userSchema.index({ roles: 1 });
 userSchema.index({ status: 1 });
+userSchema.index({ department: 1 });
 
 export const User = mongoose.model<IUser>('User', userSchema);

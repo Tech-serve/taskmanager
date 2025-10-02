@@ -5,9 +5,20 @@ import { Board } from './models/Board';
 import { Column } from './models/Column';
 import { Task } from './models/Task';
 import { AuthUtils } from './utils/auth';
-import { Role, UserStatus, BoardType, Template, Priority } from './types';
+import { Role, UserStatus, BoardType, Template, Priority, Department } from './types';
+import { RoleModel } from './models/Role'; // ⬅️ добавили модель ролей
 
 dotenv.config();
+
+// Базовые роли (создаём, если нет)
+const ensureRole = async (key: string, name?: string, builtIn = true) => {
+  const KEY = key.trim().toUpperCase();
+  await RoleModel.updateOne(
+    { key: KEY },
+    { $setOnInsert: { name: name ?? KEY, builtIn, isActive: true } },
+    { upsert: true }
+  );
+};
 
 const seedData = async (): Promise<void> => {
   try {
@@ -18,9 +29,7 @@ const seedData = async (): Promise<void> => {
     }
 
     const dbName = process.env.DB_NAME || 'simplified_jira';
-    await mongoose.connect(mongoURL, {
-      dbName
-    });
+    await mongoose.connect(mongoURL, { dbName });
     console.log(`✅ Connected to MongoDB database: ${dbName}`);
 
     // Clear existing data
@@ -29,9 +38,19 @@ const seedData = async (): Promise<void> => {
     await Board.deleteMany({});
     await Column.deleteMany({});
     await Task.deleteMany({});
+    // Роли можно тоже почистить, если нужен чистый старт:
+    // await RoleModel.deleteMany({});
     console.log('✓ Cleared all collections');
 
-    // Create users
+    // Базовые роли
+    console.log('🔑 Ensuring base roles...');
+    await ensureRole('ADMIN', 'Admin');
+    await ensureRole('TECH', 'Tech');
+    await ensureRole('DESIGNER', 'Designer');
+    await ensureRole('BUYER', 'Buyer');
+    console.log('✓ Base roles ready');
+
+    // Create users (с департаментами)
     console.log('👥 Creating users...');
     const users = [
       {
@@ -43,19 +62,21 @@ const seedData = async (): Promise<void> => {
         status: UserStatus.ACTIVE
       },
       {
-        id: 'buyer-001', 
+        id: 'buyer-001',
         email: 'buyer@company.com',
         passwordHash: await AuthUtils.hashPassword('buyer123'),
         fullName: 'Alice Buyer',
         roles: [Role.BUYER],
+        department: Department.SWIP,
         status: UserStatus.ACTIVE
       },
       {
         id: 'buyer-002',
-        email: 'buyer2@company.com', 
+        email: 'buyer2@company.com',
         passwordHash: await AuthUtils.hashPassword('buyer123'),
         fullName: 'Bob Buyer',
         roles: [Role.BUYER],
+        department: Department.GAMBLING,
         status: UserStatus.ACTIVE
       },
       {
@@ -64,6 +85,7 @@ const seedData = async (): Promise<void> => {
         passwordHash: await AuthUtils.hashPassword('designer123'),
         fullName: 'Charlie Designer',
         roles: [Role.DESIGNER],
+        department: Department.GAMBLING,
         status: UserStatus.ACTIVE
       },
       {
@@ -79,7 +101,7 @@ const seedData = async (): Promise<void> => {
     await User.insertMany(users);
     console.log(`✓ Created ${users.length} users`);
 
-    // Create boards
+    // Create boards (allowedRoles сохраняем логику; department опционально)
     console.log('📋 Creating boards...');
     const boards = [
       {
@@ -93,17 +115,18 @@ const seedData = async (): Promise<void> => {
       },
       {
         id: 'board-designers',
-        name: 'Designers', 
+        name: 'Designers',
         key: 'DES',
         type: BoardType.TASKS,
         template: Template.KANBAN_BASIC,
-        allowedRoles: [Role.DESIGNER, Role.ADMIN],
-        owners: ['designer-001']
+        allowedRoles: [Role.DESIGNER, Role.ADMIN, Role.TECH], // TECH может смотреть/помогать
+        owners: ['designer-001'],
+        // department: Department.GAMBLING, // можешь зафиксировать, если нужно
       },
       {
         id: 'board-tech',
         name: 'Tech',
-        key: 'TECH', 
+        key: 'TECH',
         type: BoardType.TASKS,
         template: Template.KANBAN_TJ_TECH,
         allowedRoles: [Role.TECH, Role.ADMIN],
@@ -133,7 +156,7 @@ const seedData = async (): Promise<void> => {
       { id: 'col-buy-to-designers', boardId: 'board-buyers', key: 'TO_DESIGNERS', name: 'To Designers', order: 4 },
       { id: 'col-buy-done', boardId: 'board-buyers', key: 'DONE', name: 'Done', order: 5 },
 
-      // Designers board columns  
+      // Designers board columns
       { id: 'col-des-queue', boardId: 'board-designers', key: 'QUEUE', name: 'Queue', order: 1 },
       { id: 'col-des-doing', boardId: 'board-designers', key: 'DOING', name: 'Doing', order: 2 },
       { id: 'col-des-review', boardId: 'board-designers', key: 'REVIEW', name: 'Review', order: 3 },
@@ -154,10 +177,14 @@ const seedData = async (): Promise<void> => {
     await Column.insertMany(columns);
     console.log(`✓ Created ${columns.length} columns`);
 
-    // Create tasks
+    // Helper: resolve dept by userId
+    const u = (id: string) => users.find(x => x.id === id)!;
+    const deptOf = (id: string) => (u(id) as any).department;
+
+    // Create tasks (добавили department там, где это логично)
     console.log('📝 Creating tasks...');
     const tasks = [
-      // Alice's tasks (buyer-001)
+      // Alice's tasks (buyer-001, SWIP)
       {
         id: 'task-buy-001',
         boardKey: 'BUY',
@@ -168,32 +195,35 @@ const seedData = async (): Promise<void> => {
         tags: ['research', 'vendors', 'alice'],
         dueDate: new Date('2025-02-15'),
         assigneeId: 'buyer-001',
-        creatorId: 'buyer-001'
+        creatorId: 'buyer-001',
+        department: deptOf('buyer-001')
       },
       {
         id: 'task-buy-002',
-        boardKey: 'BUY', 
+        boardKey: 'BUY',
         columnId: 'col-buy-progress',
         title: 'Budget approval for new tools (Alice)',
         description: 'Alice is getting approval for design software licenses',
         priority: Priority.MEDIUM,
         tags: ['budget', 'tools', 'alice'],
         assigneeId: 'buyer-001',
-        creatorId: 'buyer-001'
+        creatorId: 'buyer-001',
+        department: deptOf('buyer-001')
       },
 
-      // Bob's tasks (buyer-002)
+      // Bob's tasks (buyer-002, GAMBLING)
       {
         id: 'task-buy-005',
         boardKey: 'BUY',
-        columnId: 'col-buy-backlog', 
+        columnId: 'col-buy-backlog',
         title: 'Office supplies procurement (Bob)',
         description: 'Bob needs to order office supplies for next quarter',
         priority: Priority.MEDIUM,
         tags: ['office', 'supplies', 'bob'],
         dueDate: new Date('2025-02-20'),
         assigneeId: 'buyer-002',
-        creatorId: 'buyer-002'
+        creatorId: 'buyer-002',
+        department: deptOf('buyer-002')
       },
       {
         id: 'task-buy-006',
@@ -204,8 +234,9 @@ const seedData = async (): Promise<void> => {
         priority: Priority.HIGH,
         tags: ['equipment', 'lease', 'bob'],
         dueDate: new Date('2025-02-18'),
-        assigneeId: 'buyer-002', 
-        creatorId: 'buyer-002'
+        assigneeId: 'buyer-002',
+        creatorId: 'buyer-002',
+        department: deptOf('buyer-002')
       },
 
       // Cross-team routing tasks
@@ -214,12 +245,13 @@ const seedData = async (): Promise<void> => {
         boardKey: 'BUY',
         columnId: 'col-buy-to-tech',
         title: 'Technical requirements for API integration',
-        description: 'Need tech team to define API specs for new vendor system', 
+        description: 'Need tech team to define API specs for new vendor system',
         priority: Priority.HIGH,
         tags: ['api', 'integration', 'cross-team'],
         dueDate: new Date('2025-02-10'),
         assigneeId: 'tech-001',
-        creatorId: 'buyer-001'
+        creatorId: 'buyer-001',
+        department: deptOf('buyer-001')
       },
       {
         id: 'task-buy-004',
@@ -231,10 +263,11 @@ const seedData = async (): Promise<void> => {
         tags: ['ui', 'dashboard', 'cross-team'],
         dueDate: new Date('2025-02-20'),
         assigneeId: 'designer-001',
-        creatorId: 'buyer-001'
+        creatorId: 'buyer-001',
+        department: deptOf('buyer-001')
       },
 
-      // Designer tasks
+      // Designer tasks (designer-001, GAMBLING)
       {
         id: 'task-des-001',
         boardKey: 'DES',
@@ -245,21 +278,23 @@ const seedData = async (): Promise<void> => {
         tags: ['landing', 'branding'],
         dueDate: new Date('2025-02-25'),
         assigneeId: 'designer-001',
-        creatorId: 'designer-001'
+        creatorId: 'designer-001',
+        department: deptOf('designer-001')
       },
       {
         id: 'task-des-002',
-        boardKey: 'DES', 
+        boardKey: 'DES',
         columnId: 'col-des-doing',
         title: 'Mobile app icon set',
         description: 'Create consistent icon set for mobile application',
         priority: Priority.MEDIUM,
         tags: ['mobile', 'icons'],
         assigneeId: 'designer-001',
-        creatorId: 'designer-001'
+        creatorId: 'designer-001',
+        department: deptOf('designer-001')
       },
 
-      // Tech tasks  
+      // Tech tasks (tech-001)
       {
         id: 'task-tech-001',
         boardKey: 'TECH',
@@ -280,14 +315,14 @@ const seedData = async (): Promise<void> => {
         description: 'Improve JWT token handling and add refresh tokens',
         priority: Priority.MEDIUM,
         tags: ['auth', 'refactor'],
-        assigneeId: 'tech-001', 
+        assigneeId: 'tech-001',
         creatorId: 'tech-001'
       },
       {
         id: 'task-tech-003',
         boardKey: 'TECH',
         columnId: 'col-tech-review',
-        title: 'API rate limiting implementation', 
+        title: 'API rate limiting implementation',
         description: 'Add rate limiting middleware to prevent abuse',
         priority: Priority.LOW,
         tags: ['api', 'security'],
@@ -368,9 +403,9 @@ const seedData = async (): Promise<void> => {
     console.log('\n🎉 Seed completed successfully!');
     console.log('\nLogin credentials:');
     console.log('Admin: admin@company.com / admin123');
-    console.log('Alice (Buyer): buyer@company.com / buyer123');
-    console.log('Bob (Buyer): buyer2@company.com / buyer123');
-    console.log('Charlie (Designer): designer@company.com / designer123');
+    console.log('Alice (Buyer SWIP): buyer@company.com / buyer123');
+    console.log('Bob (Buyer GAMBLING): buyer2@company.com / buyer123');
+    console.log('Charlie (Designer GAMBLING): designer@company.com / designer123');
     console.log('David (Tech): tech@company.com / tech123');
 
     await mongoose.connection.close();

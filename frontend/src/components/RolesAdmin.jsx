@@ -1,14 +1,15 @@
+'use client';
 import React, { useEffect, useState } from 'react';
-import { rolesAPI } from '../../lib/api';
-import { Button } from '../ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
-import { Input } from '../ui/input';
-import { Label } from '../ui/label';
-import { Badge } from '../ui/badge';
+import { Button } from './ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Badge } from './ui/badge';
 import { toast } from 'sonner';
+import { rolesAPI } from '../lib/api';
 
-const RolesAdmin = () => {
+export default function RolesAdmin() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -45,7 +46,7 @@ const RolesAdmin = () => {
       await rolesAPI.create({
         key: String(form.key).trim().toLowerCase(),
         name: form.name,
-        description: form.description || ''
+        description: form.description || '',
       });
       toast.success('Role created');
       setOpenAdd(false);
@@ -96,7 +97,7 @@ const RolesAdmin = () => {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 p-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">Roles</h2>
@@ -195,6 +196,4 @@ const RolesAdmin = () => {
       </Dialog>
     </div>
   );
-};
-
-export default RolesAdmin;
+}

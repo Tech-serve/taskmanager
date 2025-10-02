@@ -1,17 +1,19 @@
-import mongoose, { Schema, Document, Model } from 'mongoose';
+import mongoose, { Schema } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 
-export interface IRole extends Document {
-  id: string;
-  key: string;        // UPPERCASE уникальный ключ, напр. BUYER
-  name: string;       // Название для UI, напр. Buyer
-  description?: string;
-  isActive: boolean;
+export interface IRoleDoc {
+  _id: mongoose.Types.ObjectId;
+  id: string;                 // UUID
+  key: string;                // УНИКАЛЬНЫЙ КЛЮЧ, UPPERCASE
+  name: string;               // Человекочитаемое имя
+  description?: string | null;
+  isActive: boolean;          // Вкл/Выкл
+  builtIn: boolean;           // Системная роль (нелучше не удалять)
   createdAt: Date;
   updatedAt: Date;
 }
 
-const RoleSchema = new Schema<IRole>(
+const roleSchema = new Schema<IRoleDoc>(
   {
     id: {
       type: String,
@@ -22,47 +24,45 @@ const RoleSchema = new Schema<IRole>(
     key: {
       type: String,
       required: true,
-      uppercase: true,  // Модель сама хранит в UPPERCASE
-      trim: true,
       unique: true,
+      uppercase: true,
+      trim: true,
     },
     name: {
       type: String,
       required: true,
       trim: true,
     },
-    description: { type: String },
-    isActive: { type: Boolean, default: true },
+    description: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    builtIn: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   {
     timestamps: true,
-    versionKey: false,
     toJSON: {
-      virtuals: true,
-      transform(_doc, ret) {
-        // Нормализуем поля для ответа
-        if (!ret.id && ret._id) ret.id = String(ret._id);
-        delete ret._id;
+      transform: (_doc, ret) => {
+        delete (ret as any)._id;
+        delete (ret as any).__v;
+        return ret;
       },
     },
-    toObject: { virtuals: true },
   }
 );
 
 // Индексы
-RoleSchema.index({ key: 1 }, { unique: true });
-RoleSchema.index({ id: 1 }, { unique: true });
+roleSchema.index({ id: 1 }, { unique: true });
+roleSchema.index({ key: 1 }, { unique: true });
 
-// Единый экземпляр модели (важно для hot-reload)
-const RoleModel: Model<IRole> =
-  (mongoose.models.Role as Model<IRole>) ||
-  mongoose.model<IRole>('Role', RoleSchema);
-
-// Экспорт без конфликтов:
-// - default: RoleModel
-// - именованный: Role (для импорта { Role })
-// - при желании можно также импортировать { RoleModel }
-const Role = RoleModel;
-
-export default RoleModel;
-export { RoleModel, Role };
+export const RoleModel = mongoose.model<IRoleDoc>('Role', roleSchema);
