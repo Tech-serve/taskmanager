@@ -1,0 +1,343 @@
+import React, { useState, useEffect } from 'react';
+import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Textarea } from './ui/textarea';
+import { Switch } from './ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Badge } from './ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { boardsAPI, columnsAPI } from '../lib/api';
+import { toast } from 'sonner';
+import { 
+  Settings, 
+  Plus, 
+  Trash2, 
+  Users, 
+  Eye, 
+  Lock,
+  Save,
+  X
+} from 'lucide-react';
+
+const BoardSettings = ({ board, onUpdate, onClose }) => {
+  const [boardData, setBoardData] = useState({
+    name: board?.name || '',
+    key: board?.key || '',
+    type: board?.type || 'tasks',
+    template: board?.template || 'kanban-basic',
+    is_archived: board?.is_archived || false,
+    settings: {
+      assignee_enabled: board?.settings?.assignee_enabled ?? true,
+      due_dates_enabled: board?.settings?.due_dates_enabled ?? true,
+      priority_enabled: board?.settings?.priority_enabled ?? true,
+      tags_enabled: board?.settings?.tags_enabled ?? true,
+      comments_enabled: board?.settings?.comments_enabled ?? false,
+      time_tracking_enabled: board?.settings?.time_tracking_enabled ?? false,
+    },
+    allowed_roles: board?.allowed_roles || [],
+    allowed_group_ids: board?.allowed_group_ids || [],
+    members: board?.members || [],
+    owners: board?.owners || []
+  });
+  
+  const [columns, setColumns] = useState([]);
+  const [newColumn, setNewColumn] = useState({ key: '', name: '', order: 0 });
+  const [loading, setLoading] = useState(false);
+
+  const availableRoles = ['admin', 'buyer', 'designer', 'tech'];
+  const boardTypes = [
+    { value: 'tasks', label: 'Task Board' },
+    { value: 'expenses', label: 'Expense Board' }
+  ];
+  const templates = [
+    { value: 'kanban-basic', label: 'Basic Kanban' },
+    { value: 'kanban-tj-tech', label: 'Tech Workflow' },
+    { value: 'empty', label: 'Empty Board' }
+  ];
+
+  useEffect(() => {
+    if (board?.id) {
+      fetchColumns();
+    }
+  }, [board]);
+
+  const fetchColumns = async () => {
+    try {
+      const response = await columnsAPI.getByBoardId(board.id);
+      setColumns(response.data.sort((a, b) => a.order - b.order));
+    } catch (error) {
+      console.error('Failed to fetch columns:', error);
+    }
+  };
+
+  const handleSaveBoard = async () => {
+    setLoading(true);
+    try {
+      // Update board settings via API
+      await boardsAPI.update(board.id, boardData);
+      onUpdate(boardData);
+      toast.success('Board settings updated successfully');
+    } catch (error) {
+      toast.error('Failed to update board settings');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddColumn = async () => {
+    if (!newColumn.name || !newColumn.key) {
+      toast.error('Column name and key are required');
+      return;
+    }
+
+    try {
+      const columnData = {
+        ...newColumn,
+        order: columns.length + 1
+      };
+      
+      await columnsAPI.create(board.id, columnData);
+      await fetchColumns();
+      setNewColumn({ key: '', name: '', order: 0 });
+      toast.success('Column added successfully');
+    } catch (error) {
+      toast.error('Failed to add column');
+    }
+  };
+
+  const handleDeleteColumn = async (columnId) => {
+    try {
+      await columnsAPI.delete(columnId);
+      await fetchColumns();
+      toast.success('Column deleted successfully');
+    } catch (error) {
+      if (error.response?.status === 400) {
+        toast.error('Cannot delete column with tasks');
+      } else {
+        toast.error('Failed to delete column');
+      }
+    }
+  };
+
+  const toggleRole = (role) => {
+    const currentRoles = boardData.allowed_roles;
+    const updatedRoles = currentRoles.includes(role)
+      ? currentRoles.filter(r => r !== role)
+      : [...currentRoles, role];
+    
+    setBoardData({ ...boardData, allowed_roles: updatedRoles });
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto p-6 space-y-6 bg-white dark:bg-gray-600 min-h-screen transition-colors duration-300">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <Settings className="w-6 h-6 text-blue-600" />
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Board Settings</h1>
+        </div>
+        <div className="flex items-center space-x-3">
+          <Button variant="outline" onClick={onClose} className="dark:bg-gray-500 dark:border-gray-400 dark:text-white dark:hover:bg-gray-400">
+            <X className="w-4 h-4 mr-2" />
+            Cancel
+          </Button>
+          <Button onClick={handleSaveBoard} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white">
+            <Save className="w-4 h-4 mr-2" />
+            {loading ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Basic Settings */}
+        <Card className="glass border-0 shadow-lg dark:bg-gray-500/50 dark:border-gray-400">
+          <CardHeader>
+            <CardTitle className="text-gray-900 dark:text-white">Basic Information</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label htmlFor="board-name" className="text-gray-700 dark:text-white">Board Name</Label>
+              <Input
+                id="board-name"
+                value={boardData.name}
+                onChange={(e) => setBoardData({ ...boardData, name: e.target.value })}
+                placeholder="Enter board name"
+                className="dark:bg-gray-400 dark:border-gray-300 dark:text-white dark:placeholder-gray-200"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="board-key" className="text-gray-700 dark:text-white">Board Key</Label>
+              <Input
+                id="board-key"
+                value={boardData.key}
+                onChange={(e) => setBoardData({ ...boardData, key: e.target.value.toUpperCase() })}
+                placeholder="e.g., PROJ"
+                maxLength={10}
+                className="dark:bg-gray-400 dark:border-gray-300 dark:text-white dark:placeholder-gray-200"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="board-type" className="text-gray-700 dark:text-white">Board Type</Label>
+              <div className="px-3 py-2 border rounded-md bg-gray-50 dark:bg-gray-400 text-gray-700 dark:text-white border-gray-300 dark:border-gray-300">
+                {boardTypes.find(t => t.value === boardData.type)?.label || 'Tasks'}
+                <span className="text-xs text-gray-500 dark:text-gray-200 ml-2">(Cannot be changed)</span>
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="board-template" className="text-gray-700 dark:text-white">Template</Label>
+              <Select value={boardData.template} onValueChange={(value) => setBoardData({ ...boardData, template: value })}>
+                <SelectTrigger className="dark:bg-gray-400 dark:border-gray-300 dark:text-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="dark:bg-gray-500 dark:border-gray-400">
+                  {templates.map(template => (
+                    <SelectItem key={template.value} value={template.value} className="dark:text-white dark:hover:bg-gray-400">
+                      {template.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="archived"
+                checked={boardData.is_archived}
+                onCheckedChange={(checked) => setBoardData({ ...boardData, is_archived: checked })}
+              />
+              <Label htmlFor="archived" className="text-gray-700 dark:text-white">Archive this board</Label>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Visibility Settings */}
+        <Card className="glass border-0 shadow-lg dark:bg-gray-500/50 dark:border-gray-400">
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2 text-gray-900 dark:text-white">
+              <Eye className="w-5 h-5" />
+              <span>Visibility & Access</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label className="text-sm font-medium text-gray-700 dark:text-white">Allowed Roles</Label>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {availableRoles.map(role => (
+                  <Badge
+                    key={role}
+                    variant={boardData.allowed_roles.includes(role) ? "default" : "outline"}
+                    className={`cursor-pointer ${boardData.allowed_roles.includes(role) 
+                      ? 'bg-blue-600 text-white dark:bg-blue-500' 
+                      : 'border-gray-300 dark:border-gray-300 dark:text-white dark:hover:bg-gray-400'}`}
+                    onClick={() => toggleRole(role)}
+                  >
+                    {role}
+                  </Badge>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-200 mt-1">
+                Click to toggle role access
+              </p>
+            </div>
+
+            <div>
+              <Label className="text-gray-700 dark:text-white">Current Access</Label>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-200">
+                  <span>Members: {boardData.members?.length || 0}</span>
+                  <span>Owners: {boardData.owners?.length || 0}</span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Feature Settings */}
+        <Card className="glass border-0 shadow-lg dark:bg-gray-500/50 dark:border-gray-400">
+          <CardHeader>
+            <CardTitle className="text-gray-900 dark:text-white">Feature Settings</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {Object.entries(boardData.settings).map(([key, value]) => (
+              <div key={key} className="flex items-center justify-between">
+                <Label htmlFor={key} className="text-sm text-gray-700 dark:text-white">
+                  {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                </Label>
+                <Switch
+                  id={key}
+                  checked={value}
+                  onCheckedChange={(checked) => 
+                    setBoardData({
+                      ...boardData,
+                      settings: { ...boardData.settings, [key]: checked }
+                    })
+                  }
+                />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+
+        {/* Column Management */}
+        <Card className="glass border-0 shadow-lg dark:bg-gray-500/50 dark:border-gray-400">
+          <CardHeader>
+            <CardTitle className="text-gray-900 dark:text-white">Column Management</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Existing Columns */}
+            <div className="space-y-2">
+              {columns.map((column, index) => (
+                <div key={column.id} className="flex items-center justify-between p-2 border rounded dark:border-gray-400 bg-gray-50 dark:bg-gray-400/50">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-sm font-medium text-gray-700 dark:text-white">{index + 1}.</span>
+                    <span className="text-gray-900 dark:text-white">{column.name}</span>
+                    <Badge variant="outline" className="text-xs dark:border-gray-300 dark:text-white">
+                      {column.key}
+                    </Badge>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDeleteColumn(column.id)}
+                    className="text-red-600 dark:text-red-300 hover:text-red-700 dark:hover:text-red-200 hover:bg-red-50 dark:hover:bg-red-900/30"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+
+            {/* Add New Column */}
+            <div className="border-t dark:border-gray-400 pt-4">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <Input
+                  placeholder="Column name"
+                  value={newColumn.name}
+                  onChange={(e) => setNewColumn({ ...newColumn, name: e.target.value })}
+                  className="dark:bg-gray-400 dark:border-gray-300 dark:text-white dark:placeholder-gray-200"
+                />
+                <Input
+                  placeholder="Key (e.g., TODO)"
+                  value={newColumn.key}
+                  onChange={(e) => setNewColumn({ ...newColumn, key: e.target.value.toUpperCase() })}
+                  className="dark:bg-gray-400 dark:border-gray-300 dark:text-white dark:placeholder-gray-200"
+                />
+              </div>
+              <Button onClick={handleAddColumn} className="w-full bg-blue-600 hover:bg-blue-700 text-white">
+                <Plus className="w-4 h-4 mr-2" />
+                Add Column
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+export default BoardSettings;
