@@ -139,6 +139,12 @@ export const createColumnSchema = Joi.object({
   order: Joi.number().integer().min(1).required(),
 });
 
+/** ✅ Добавьте это */
+export const updateColumnSchema = Joi.object({
+  key: Joi.string().min(2).max(50).uppercase().optional(),
+  name: Joi.string().min(2).max(100).optional(),
+  order: Joi.number().integer().min(1).optional(),
+}).or('key', 'name', 'order'); 
 /* ======================
  *  TASKS
  * ====================== */

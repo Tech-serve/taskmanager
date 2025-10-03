@@ -385,29 +385,29 @@ const KanbanBoard = ({ user }) => {
               </Button>
             )}
             
-            <Dialog open={createTaskOpen} onOpenChange={setCreateTaskOpen}>
-              <DialogTrigger asChild>
-                <Button 
-                  className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm"
-                  data-testid="create-task-button"
-                >
-                  <Plus className="w-3 h-3 mr-1" />
-                  Create Task
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-md bg-white dark:bg-gray-600 border dark:border-gray-400">
-                <DialogHeader>
-                  <DialogTitle className="text-gray-900 dark:text-white">Create New Task</DialogTitle>
-                </DialogHeader>
-                <TaskForm 
-                  columns={columns} 
-                  users={users}
-                  onSubmit={createTask}
-                  boardSettings={board.settings}
-                  boardType={board?.type || 'tasks'}
-                />
-              </DialogContent>
-            </Dialog>
+           {/* Create Task — используем ровно тот же TaskModal */}
+<Button
+  className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm"
+  onClick={() => setCreateTaskOpen(true)}
+  data-testid="create-task-button"
+>
+  <Plus className="w-3 h-3 mr-1" />
+  Create Task
+</Button>
+
+<TaskModal
+  task={null}                          // режим создания
+  isOpen={createTaskOpen}
+  onClose={() => setCreateTaskOpen(false)}
+  users={users}
+  onTaskUpdate={async () => {          // после создания обновляем доску и закрываем
+    await fetchTasks();
+    setCreateTaskOpen(false);
+  }}
+  boardType={board?.type || 'tasks'}
+  defaultBoardKey={board.key}          // чтобы в форме не спрашивать ключ
+  defaultColumnId={columns?.[0]?.id || ''} // по умолчанию первая колонка
+/>
 
             {/* View Task Modal */}
             <TaskModal

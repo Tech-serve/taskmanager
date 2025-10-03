@@ -8,67 +8,59 @@ import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
-// Helper function to check board access (same as in boards.ts)
+/** Проверка доступа к борду */
 const checkBoardAccess = async (user: any, boardKey: string) => {
   const key = String(boardKey || '').toUpperCase();
   const board = await Board.findOne({ key });
-  if (!board) {
-    return null;
-  }
+  if (!board) return null;
 
-  // Admin can access all boards
-  if (user.roles.includes(Role.ADMIN)) {
+  // Админ — везде
+  if (user.roles?.includes(Role.ADMIN)) return board;
+
+  // Покупателю открываем BUY/TECH/DES (как было)
+  if (user.roles?.includes(Role.BUYER) && ['BUY', 'TECH', 'DES'].includes(key)) {
     return board;
   }
 
-  // Buyers can access BUY, TECH, DES boards
-  if (user.roles.includes(Role.BUYER) && ['BUY', 'TECH', 'DES'].includes(key)) {
+  // Роли на борде
+  if (board.allowedRoles && board.allowedRoles.some((r: Role) => user.roles?.includes(r))) {
     return board;
   }
 
-  // Check role-based access
-  if (board.allowedRoles && board.allowedRoles.some((role: Role) => user.roles.includes(role))) {
-    return board;
-  }
-
-  // Check membership
-  if (board.members && board.members.includes(user.id)) {
-    return board;
-  }
-
-  if (board.owners && board.owners.includes(user.id)) {
-    return board;
-  }
+  // Участник или владелец
+  if ((board.members || []).includes(user.id)) return board;
+  if ((board.owners || []).includes(user.id)) return board;
 
   return null;
 };
 
-// @route   POST /api/tasks
-// @desc    Create new task
-// @access  Private
+/**
+ * POST /api/tasks
+ * Создать задачу
+ */
 router.post('/', validate(createTaskSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
     const taskData = { ...(req.body || {}) };
 
-    // normalize input
+    // нормализация
     taskData.boardKey = String(taskData.boardKey || '').toUpperCase();
 
-    // Check board access
+    // доступ к борду
     const board = await checkBoardAccess(user, taskData.boardKey);
     if (!board) {
       res.status(404).json({ error: 'Board not found or access denied' });
       return;
     }
 
-    // Verify column exists
+    // колонка существует?
     const column = await Column.findOne({ id: taskData.columnId });
     if (!column) {
       res.status(404).json({ error: 'Column not found' });
       return;
     }
 
-    // Soft normalize for expenses: amount/category
+    // мягкая нормализация расходов
     if (taskData.amount !== undefined) {
       const n = Number(taskData.amount);
       taskData.amount = Number.isFinite(n) ? n : 0;
@@ -77,17 +69,16 @@ router.post('/', validate(createTaskSchema), async (req: AuthRequest, res: Respo
       taskData.category = String(taskData.category);
     }
 
-    // Create task
+    // создаём
     const task = new Task({
       ...taskData,
-      creatorId: user.id
+      creatorId: user.id,
     });
 
     await task.save();
     res.status(201).json(task.toJSON());
   } catch (error: any) {
     console.error('Create task error:', error);
-    // Mongoose validation error → 400
     if (error?.name === 'ValidationError') {
       res.status(400).json({ error: error.message });
       return;
@@ -96,32 +87,32 @@ router.post('/', validate(createTaskSchema), async (req: AuthRequest, res: Respo
   }
 });
 
-// @route   PATCH /api/tasks/:id
-// @desc    Update task with cross-team routing
-// @access  Private
+/**
+ * PATCH /api/tasks/:id
+ * Обновить задачу (с кросс-командным роутингом)
+ */
 router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const updateData = { ...(req.body || {}) };
     const user = req.user!;
 
-    // Find existing task
     const task = await Task.findOne({ id });
     if (!task) {
       res.status(404).json({ error: 'Task not found' });
       return;
     }
 
-    // Check board access
+    // доступ по текущему борду задачи
     const board = await checkBoardAccess(user, task.boardKey);
     if (!board) {
       res.status(403).json({ error: 'Access denied' });
       return;
     }
 
-    const isAdmin = user.roles.includes(Role.ADMIN);
+    const isAdmin = user.roles?.includes(Role.ADMIN);
 
-    // Cross-team routing when moving to specific columns
+    // перемещение между бордами по спец-колонкам
     if (updateData.columnId) {
       const newColumn = await Column.findOne({ id: updateData.columnId });
       if (newColumn) {
@@ -143,7 +134,7 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
           const targetBoard = await Board.findOne({ key: newBoardKey });
           const targetColumn = await Column.findOne({
             boardId: targetBoard?.id,
-            key: targetColumnKey
+            key: targetColumnKey,
           });
 
           if (targetBoard && targetColumn) {
@@ -153,9 +144,9 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
               boardKey: currentBoardKey,
               userId: user.id,
               userName: user.fullName,
-              routedAt: new Date()
+              routedAt: new Date(),
             };
-            // merge other updates (but keep column/board from routing)
+            // сливаем остальные апдейты, но фиксируем columnId/boardKey
             Object.assign(task, { ...updateData, columnId: targetColumn.id, boardKey: newBoardKey });
             task.updatedAt = new Date();
             await task.save();
@@ -166,7 +157,7 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
       }
     }
 
-    // Soft normalization for expenses fields
+    // мягкая нормализация расходов
     if (updateData.amount !== undefined) {
       const n = Number(updateData.amount);
       updateData.amount = Number.isFinite(n) ? n : 0;
@@ -175,8 +166,7 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
       updateData.category = String(updateData.category);
     }
 
-    // Permissions:
-    // admin — всё; иначе автор/ассайни
+    // права: админ — всё; иначе только автор или текущий ассайни
     if (!isAdmin) {
       const isCreatorOrAssignee = [task.creatorId, task.assigneeId].includes(user.id);
       if (!isCreatorOrAssignee) {
@@ -196,9 +186,10 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
   }
 });
 
-// @route   POST /api/tasks/:id/comments
-// @desc    Add comment to a task
-// @access  Private
+/**
+ * POST /api/tasks/:id/comments
+ * Добавить комментарий к задаче
+ */
 router.post('/:id/comments', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
@@ -216,7 +207,7 @@ router.post('/:id/comments', async (req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    // Access check to the task's board
+    // доступ к борду задачи
     const board = await checkBoardAccess(user, task.boardKey);
     if (!board) {
       res.status(403).json({ error: 'Access denied' });
@@ -226,7 +217,7 @@ router.post('/:id/comments', async (req: AuthRequest, res: Response): Promise<vo
     const comment = {
       id: uuidv4(),
       authorId: user.id,
-      authorName: user.fullName,
+      authorName: user.fullName || user.email,
       text: text.trim(),
       createdAt: new Date(),
     };
@@ -236,6 +227,7 @@ router.post('/:id/comments', async (req: AuthRequest, res: Response): Promise<vo
     task.updatedAt = new Date();
     await task.save();
 
+    // фронт у тебя перезагружает задачу сам, достаточно вернуть комментарий
     res.status(201).json(comment);
   } catch (error) {
     console.error('Add comment error:', error);
@@ -243,9 +235,10 @@ router.post('/:id/comments', async (req: AuthRequest, res: Response): Promise<vo
   }
 });
 
-// @route   DELETE /api/tasks/:id
-// @desc    Delete task
-// @access  Private
+/**
+ * DELETE /api/tasks/:id
+ * Удалить задачу
+ */
 router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -258,9 +251,9 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
     }
 
     const board = await Board.findOne({ key: task.boardKey });
-    if (!user.roles.includes(Role.ADMIN) &&
-        task.creatorId !== user.id &&
-        !board?.owners?.includes(user.id)) {
+    const isOwner = (board?.owners || []).includes(user.id);
+
+    if (!user.roles?.includes(Role.ADMIN) && task.creatorId !== user.id && !isOwner) {
       res.status(403).json({ error: 'Permission denied' });
       return;
     }
@@ -273,39 +266,40 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
   }
 });
 
-// @route   GET /api/me/tasks
-// @desc    Get current user's assigned tasks
-// @access  Private
+/**
+ * GET /api/me/tasks
+ * Задачи, назначенные текущему пользователю, в доступных ему бордах
+ */
 router.get('/me/tasks', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
 
-    // Get accessible boards
+    // доступные борды
     let boardQuery: any = {};
-    if (!user.roles.includes(Role.ADMIN)) {
-      if (user.roles.includes(Role.BUYER)) {
+    if (!user.roles?.includes(Role.ADMIN)) {
+      if (user.roles?.includes(Role.BUYER)) {
         boardQuery = { key: { $in: ['BUY', 'TECH', 'DES'] } };
       } else {
         boardQuery = {
           $or: [
-            { allowedRoles: { $in: user.roles } },
+            { allowedRoles: { $in: user.roles || [] } },
             { members: user.id },
-            { owners: user.id }
-          ]
+            { owners: user.id },
+          ],
         };
       }
     }
 
     const accessibleBoards = await Board.find(boardQuery).select('key');
-    const accessibleBoardKeys = accessibleBoards.map(b => b.key);
+    const accessibleBoardKeys = accessibleBoards.map((b) => b.key);
 
-    // Get tasks assigned to user from accessible boards
+    // задачи
     const tasks = await Task.find({
       assigneeId: user.id,
-      boardKey: { $in: accessibleBoardKeys }
+      boardKey: { $in: accessibleBoardKeys },
     }).sort({ createdAt: -1 });
 
-    res.json(tasks.map(t => t.toJSON()));
+    res.json(tasks.map((t) => t.toJSON()));
   } catch (error) {
     console.error('Get my tasks error:', error);
     res.status(500).json({ error: 'Internal server error' });

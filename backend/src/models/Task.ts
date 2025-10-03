@@ -5,9 +5,9 @@ import { v4 as uuidv4 } from 'uuid';
 const CommentSchema = new Schema(
   {
     id: { type: String, default: () => uuidv4() },
-    authorId: { type: String, required: true },
-    authorName: { type: String, required: true },
-    text: { type: String, required: true, trim: true },
+    authorId: { type: String, required: true, index: true },
+    authorName: { type: String, required: true, trim: true },
+    text: { type: String, required: true, trim: true, maxlength: 2000 },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -19,86 +19,118 @@ const taskSchema = new Schema<ITask>(
       type: String,
       default: () => uuidv4(),
       unique: true,
-      required: true
+      required: true,
+      index: true,
     },
     boardKey: {
       type: String,
       required: true,
       uppercase: true,
-      index: true
+      index: true,
     },
     columnId: {
       type: String,
       required: true,
-      index: true
+      index: true,
     },
     title: {
       type: String,
       required: true,
-      trim: true
+      trim: true,
     },
     description: {
       type: String,
-      trim: true
+      trim: true,
     },
     priority: {
       type: String,
       enum: Object.values(Priority),
-      default: Priority.MEDIUM
+      default: Priority.MEDIUM,
+      index: true,
     },
-    tags: [{
-      type: String,
-      trim: true
-    }],
+    tags: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
     dueDate: {
-      type: Date
+      type: Date,
+      index: true,
     },
     assigneeId: {
       type: String,
-      index: true
+      index: true,
     },
     creatorId: {
       type: String,
       required: true,
-      index: true
+      index: true,
     },
     department: {
       type: String,
       enum: Object.values(Department),
-      required: false
+      required: false,
+      index: true,
     },
+    // — поля для расходов —
     amount: {
       type: Number,
-      min: 0
+      min: 0,
     },
     category: {
       type: String,
       enum: [
         // Sweep Stakes
-        'sweep_accounts', 'sweep_proxy_domains', 'sweep_services', 'sweep_fakes', 'sweep_other',
+        'sweep_accounts',
+        'sweep_proxy_domains',
+        'sweep_services',
+        'sweep_fakes',
+        'sweep_other',
         // IGaming
-        'igaming_fb_accounts', 'igaming_uac_accounts', 'igaming_creatives', 'igaming_google_play',
-        'igaming_services', 'igaming_proxy_domains', 'igaming_other',
+        'igaming_fb_accounts',
+        'igaming_uac_accounts',
+        'igaming_creatives',
+        'igaming_google_play',
+        'igaming_services',
+        'igaming_proxy_domains',
+        'igaming_other',
         // HR Department
-        'hr_vacancies', 'hr_candidates', 'hr_services', 'hr_polygraph', 'hr_books', 'hr_team_building', 'hr_other',
+        'hr_vacancies',
+        'hr_candidates',
+        'hr_services',
+        'hr_polygraph',
+        'hr_books',
+        'hr_team_building',
+        'hr_other',
         // Office
-        'office_household', 'office_food_water', 'office_services', 'office_hookah',
-        'office_furniture', 'office_repair_security', 'office_charity', 'office_other'
-      ]
+        'office_household',
+        'office_food_water',
+        'office_services',
+        'office_hookah',
+        'office_furniture',
+        'office_repair_security',
+        'office_charity',
+        'office_other',
+      ],
     },
     receiptUrl: {
-      type: String // URL to uploaded receipt/check
+      type: String, // URL чека
     },
+
+    // — кросс-командный роутинг —
     routedFrom: {
       boardKey: String,
       userId: String,
       userName: String,
-      routedAt: Date
+      routedAt: Date,
     },
+
+    // — комментарии —
     comments: {
       type: [CommentSchema],
-      default: []
-    }
+      default: [],
+    },
   },
   {
     timestamps: true,
@@ -107,11 +139,12 @@ const taskSchema = new Schema<ITask>(
         delete (ret as any)._id;
         delete (ret as any).__v;
         return ret;
-      }
-    }
+      },
+    },
   }
 );
 
+// индексы
 taskSchema.index({ boardKey: 1, creatorId: 1 });
 taskSchema.index({ assigneeId: 1 });
 taskSchema.index({ createdAt: -1 });
