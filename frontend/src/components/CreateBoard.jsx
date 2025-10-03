@@ -1,3 +1,4 @@
+// src/components/CreateBoard.jsx
 import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
@@ -12,11 +13,15 @@ import { Plus, Kanban, CheckCircle, ArrowRight } from 'lucide-react';
 
 const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
   const [step, setStep] = useState(1);
+
+  // ВАЖНО: разделяем "UI-шаблон" и "бэкенд-шаблон"
+  // uiTemplate: что выбирает пользователь (может быть 'expenses-default')
+  // boardData.template: что реально уходит на бэк (валидный enum)
   const [boardData, setBoardData] = useState({
     name: '',
     key: '',
     type: 'tasks',            // "tasks" | "expenses"
-    template: 'kanban-basic', // UI значение; "cross-team" мапим на backend-safe
+    template: 'kanban-basic', // то, что уходит на бэк (валидный enum)
     allowed_roles: ['admin'], // UI-стейт (snake) -> на бэк пойдёт allowedRoles (camel)
     description: '',
     settings: {
@@ -26,6 +31,8 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
       tags_enabled: true,
     },
   });
+
+  const [uiTemplate, setUiTemplate] = useState('kanban-basic');
 
   const [columns, setColumns] = useState([
     { key: 'BACKLOG', name: 'Backlog', order: 1 },
@@ -57,54 +64,64 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
     { value: 'expenses', label: 'Expense Board', description: 'Track expenses and approvals', icon: '💰' },
   ];
 
-  const templates = [
+  // БАЗОВЫЕ ШАБЛОНЫ ДЛЯ TASKS
+  const BASE_TEMPLATES = [
     {
       value: 'kanban-basic',
       label: 'Basic Kanban',
       description: 'Simple workflow for general tasks',
+      icon: '📋',
       columns: [
-        { key: 'BACKLOG', name: 'Backlog', order: 1 },
+        { key: 'BACKLOG',     name: 'Backlog',     order: 1 },
         { key: 'IN_PROGRESS', name: 'In Progress', order: 2 },
-        { key: 'REVIEW', name: 'Review', order: 3 },
-        { key: 'DONE', name: 'Done', order: 4 },
+        { key: 'REVIEW',      name: 'Review',      order: 3 },
+        { key: 'DONE',        name: 'Done',        order: 4 },
       ],
     },
-    {
-      value: 'kanban-tj-tech',
-      label: 'Tech Workflow',
-      description: 'Development workflow with code review',
-      columns: [
-        { key: 'TODO', name: 'Todo', order: 1 },
-        { key: 'IN_DEV', name: 'In Development', order: 2 },
-        { key: 'CODE_REVIEW', name: 'Code Review', order: 3 },
-        { key: 'TESTING', name: 'Testing', order: 4 },
-        { key: 'DONE', name: 'Done', order: 5 },
-      ],
-    },
-    {
-      value: 'cross-team',
-      label: 'Cross-Team Board',
-      description: 'For teams that route work to other departments',
-      columns: [
-        { key: 'BACKLOG', name: 'Backlog', order: 1 },
-        { key: 'IN_PROGRESS', name: 'In Progress', order: 2 },
-        { key: 'TO_TECH', name: 'To Tech', order: 3 },
-        { key: 'TO_DESIGNERS', name: 'To Designers', order: 4 },
-        { key: 'DONE', name: 'Done', order: 5 },
-      ],
-    },
-    { value: 'empty', label: 'Empty Board', description: 'Start with no columns', columns: [] },
   ];
 
-  // UI -> backend mapping for template
-  const mapTemplateForBackend = (value) => {
-    if (value === 'cross-team') return 'kanban-basic'; // на бэке такого enum нет
-    return value; // 'kanban-basic' | 'kanban-tj-tech' | 'empty'
+  // ФИКСИРОВАННЫЙ ШАБЛОН ДЛЯ EXPENSES (UI-метка)
+  const EXPENSES_TEMPLATE = {
+    value: 'expenses-default',
+    label: 'Expenses (fixed)',
+    description: 'Requests → Approved → Paid',
+    icon: '💰',
+    columns: [
+      { key: 'EXP_REQUESTS', name: 'Requests', order: 1 },
+      { key: 'EXP_APPROVED', name: 'Approved', order: 2 },
+      { key: 'EXP_PAID',     name: 'Paid',     order: 3 },
+    ],
   };
 
+  const templates = (boardData.type === 'expenses') ? [EXPENSES_TEMPLATE] : BASE_TEMPLATES;
+
+  // ЕДИНСТВЕННОЕ место, где маппим UI → backend-safe
+  const mapTemplateForBackend = (uiValue) => {
+    if (uiValue === 'expenses-default') return 'kanban-basic';
+    // в будущем, если будет 'cross-team' и т.д., мапим сюда же
+    return uiValue; // 'kanban-basic' | др. валидные
+  };
+
+  // Если меняется тип доски — синхронизируем UI и backend-поля + колонки
+  useEffect(() => {
+    if (boardData.type === 'expenses') {
+      setUiTemplate('expenses-default');                 // показываем один пункт
+      setBoardData(prev => ({ ...prev, template: 'kanban-basic' })); // на бэк пойдёт валидное
+      setColumns(EXPENSES_TEMPLATE.columns);
+    } else {
+      // возвращаемся к обычному канбану
+      setUiTemplate('kanban-basic');
+      setBoardData(prev => ({ ...prev, template: 'kanban-basic' }));
+      setColumns(BASE_TEMPLATES[0].columns);
+    }
+  }, [boardData.type]); // тут безопасно, без лишних зависимостей
+
   const handleTemplateSelect = (templateValue) => {
+    setUiTemplate(templateValue);                         // что видит пользователь
+    const backendTemplate = mapTemplateForBackend(templateValue);
+    setBoardData(prev => ({ ...prev, template: backendTemplate })); // что уйдёт на бэк
+
     const template = templates.find(t => t.value === templateValue);
-    setBoardData(prev => ({ ...prev, template: templateValue }));
     setColumns(template?.columns || []);
   };
 
@@ -160,12 +177,11 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
       const payload = {
         name: boardData.name,
         key: String(boardData.key).toUpperCase(),
-        type: boardData.type, // "tasks" | "expenses"
-        template: mapTemplateForBackend(boardData.template),
+        type: boardData.type,                 // "tasks" | "expenses"
+        template: boardData.template,         // уже backend-safe
         // на бэк camelCase + lower-case
         allowedRoles: boardData.allowed_roles.map(r => String(r).toLowerCase()),
         description: boardData.description,
-        // если у тебя Joi ожидает settings — отправляем camelCase с дефолтами
         settings: {
           assigneeEnabled: !!boardData.settings.assignee_enabled,
           dueDatesEnabled: !!boardData.settings.due_dates_enabled,
@@ -174,7 +190,6 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
           commentsEnabled: false,
           timeTrackingEnabled: false,
         },
-        // members/owners/allowedGroupIds можно не присылать — но на всякий:
         members: [],
         owners: [],
         allowedGroupIds: [],
@@ -204,7 +219,7 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
         name: '',
         key: '',
         type: 'tasks',
-        template: 'kanban-basic',
+        template: 'kanban-basic', // backend-safe
         allowed_roles: ['admin'],
         description: '',
         settings: {
@@ -214,24 +229,22 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
           tags_enabled: true,
         },
       });
+      setUiTemplate('kanban-basic');
       setColumns([]);
     } catch (error) {
       const resp = error?.response;
       const msg = resp?.data?.error || resp?.data?.message || error?.message || 'Failed to create board';
       toast.error(msg);
-      // подробно логируем для дебага
       console.error('Board creation error:', {
         status: resp?.status,
         statusText: resp?.statusText,
         data: resp?.data,
         payloadTried: {
-          ...{
-            name: boardData.name,
-            key: String(boardData.key).toUpperCase(),
-            type: boardData.type,
-            template: mapTemplateForBackend(boardData.template),
-            allowedRoles: boardData.allowed_roles.map(r => String(r).toLowerCase()),
-          },
+          name: boardData.name,
+          key: String(boardData.key).toUpperCase(),
+          type: boardData.type,
+          template: boardData.template, // тут уже backend-safe
+          allowedRoles: boardData.allowed_roles.map(r => String(r).toLowerCase()),
         },
       });
     } finally {
@@ -330,7 +343,7 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
             <Card
               key={template.value}
               className={`cursor-pointer transition-all dark:bg-gray-500 dark:border-gray-400 ${
-                boardData.template === template.value
+                uiTemplate === template.value
                   ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-800/30'
                   : 'hover:bg-gray-50 dark:hover:bg-gray-400'
               }`}
@@ -355,7 +368,7 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
                       )}
                     </div>
                   </div>
-                  {boardData.template === template.value && <CheckCircle className="w-5 h-5 text-blue-600" />}
+                  {uiTemplate === template.value && <CheckCircle className="w-5 h-5 text-blue-600" />}
                 </div>
               </CardContent>
             </Card>
@@ -437,7 +450,8 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
           <div className="text-gray-900 dark:text-white"><strong>Name:</strong> {boardData.name}</div>
           <div className="text-gray-900 dark:text-white"><strong>Key:</strong> {boardData.key}</div>
           <div className="text-gray-900 dark:text-white"><strong>Type:</strong> {boardTypes.find(t => t.value === boardData.type)?.label}</div>
-          <div className="text-gray-900 dark:text-white"><strong>Template:</strong> {templates.find(t => t.value === boardData.template)?.label}</div>
+          <div className="text-gray-900 dark:text-white"><strong>Template (UI):</strong> {templates.find(t => t.value === uiTemplate)?.label}</div>
+          <div className="text-gray-900 dark:text-white"><strong>Template (API):</strong> {boardData.template}</div>
           <div className="text-gray-900 dark:text-white"><strong>Roles:</strong> {boardData.allowed_roles.join(', ')}</div>
           <div className="text-gray-900 dark:text-white"><strong>Columns:</strong> {columns.length} columns</div>
         </div>

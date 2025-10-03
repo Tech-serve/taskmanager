@@ -1,15 +1,11 @@
-// src/components/BoardSettings.jsx
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom'; // ← добавлено
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Textarea } from './ui/textarea';
 import { Switch } from './ui/switch';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Badge } from './ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { boardsAPI, columnsAPI, rolesAPI } from '../lib/api';
 import { toast } from 'sonner';
 import {
@@ -22,13 +18,13 @@ import {
 } from 'lucide-react';
 
 const BoardSettings = ({ board, onUpdate, onClose }) => {
-  const navigate = useNavigate(); // ← добавлено
+  const navigate = useNavigate(); 
 
   const [boardData, setBoardData] = useState({
     name: board?.name || '',
     key: board?.key || '',
     type: board?.type || 'tasks',
-    template: board?.template || 'kanban-basic',
+    template: board?.template || (board?.type === 'expenses' ? 'expenses-default' : 'kanban-basic'),
     is_archived: board?.is_archived || false,
     settings: {
       assignee_enabled: board?.settings?.assignee_enabled ?? true,
@@ -38,7 +34,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
       comments_enabled: board?.settings?.comments_enabled ?? false,
       time_tracking_enabled: board?.settings?.time_tracking_enabled ?? false,
     },
-    // сохраняем snake_case, как у тебя было
     allowed_roles: board?.allowed_roles || board?.allowedRoles || [],
     allowed_group_ids: board?.allowed_group_ids || [],
     members: board?.members || [],
@@ -49,10 +44,8 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   const [newColumn, setNewColumn] = useState({ key: '', name: '', order: 0 });
   const [loading, setLoading] = useState(false);
 
-  // ↓↓↓ добавлено только это состояние
   const [markForDeletion, setMarkForDeletion] = useState(false);
 
-  // << новый единый источник ролей
   const [allRoles, setAllRoles] = useState([]);
 
   const boardTypes = [
@@ -60,17 +53,25 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
     { value: 'expenses', label: 'Expense Board' },
   ];
 
-  const templates = [
-    { value: 'kanban-basic',  label: 'Basic Kanban' },
-    { value: 'kanban-tj-tech', label: 'Tech Workflow' },
-    { value: 'empty',          label: 'Empty Board' },
+  // ===== ДИНАМИЧЕСКИЕ ТЕМПЛЕЙТЫ (как и в CreateBoard) =====
+  const BASE_TEMPLATES = [
+    { value: 'kanban-basic',  label: 'Basic Kanban',  description: 'Simple workflow for general tasks', icon: '📋' },
   ];
+
+  const EXPENSES_TEMPLATE = {
+    value: 'expenses-default',
+    label: 'Expenses (fixed)',
+    description: 'Requests → Approved → Paid',
+    icon: '💰',
+  };
+
+  const templates = (boardData.type === 'expenses') ? [EXPENSES_TEMPLATE] : BASE_TEMPLATES;
+  // =========================================================
 
   useEffect(() => {
     if (board?.id) fetchColumns();
   }, [board?.id]);
 
-  // подхватываем изменения внешнего board, если он обновится извне
   useEffect(() => {
     setBoardData((prev) => ({
       ...prev,
@@ -78,7 +79,18 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
     }));
   }, [board?.allowed_roles, board?.allowedRoles]);
 
-  // подгружаем роли из /admin/roles
+  useEffect(() => {
+    setBoardData(prev => {
+      if (prev.type === 'expenses' && prev.template !== 'expenses-default') {
+        return { ...prev, template: 'expenses-default' };
+      }
+      if (prev.type !== 'expenses' && prev.template === 'expenses-default') {
+        return { ...prev, template: 'kanban-basic' };
+      }
+      return prev;
+    });
+  }, [boardData.type]);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -87,7 +99,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
         const items = (r.data || []).filter((x) => x.isActive !== false);
         if (mounted) setAllRoles(items);
       } catch {
-        // тихий фолбэк, UI не падает
       }
     })();
     return () => { mounted = false; };
@@ -116,13 +127,10 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
         await boardsAPI.delete(board.id);
         toast.success('Board deleted');
         onClose?.();
-        // если открыт был сам борд — уходим на главную
         navigate('/');
-        return; // чтобы не падать дальше в обычное сохранение
+        return; 
       }
-      // ####### КОНЕЦ ДОБАВКИ #######
-
-      // отправляем оба ключа для совместимости camel/snake
+     
       const payload = {
         ...boardData,
         allowedRoles: boardData.allowed_roles,
@@ -241,38 +249,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
                 {boardTypes.find(t => t.value === boardData.type)?.label || 'Tasks'}
                 <span className="text-xs text-gray-500 dark:text-gray-200 ml-2">(Cannot be changed)</span>
               </div>
-            </div>
-
-            <div>
-              <Label htmlFor="board-template" className="text-gray-700 dark:text-white">Template</Label>
-              <Select
-                value={boardData.template}
-                onValueChange={(value) => setBoardData({ ...boardData, template: value })}
-              >
-                <SelectTrigger className="dark:bg-gray-400 dark:border-gray-300 dark:text-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="dark:bg-gray-500 dark:border-gray-400">
-                  {templates.map((t) => (
-                    <SelectItem
-                      key={t.value}
-                      value={t.value}
-                      className="dark:text-white dark:hover:bg-gray-400"
-                    >
-                      {t.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex items-center space-x-2">
-              <Switch
-                id="archived"
-                checked={boardData.is_archived}
-                onCheckedChange={(checked) => setBoardData({ ...boardData, is_archived: checked })}
-              />
-              <Label htmlFor="archived" className="text-gray-700 dark:text-white">Archive this board</Label>
             </div>
           </CardContent>
         </Card>
@@ -418,7 +394,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
           </CardContent>
         </Card>
 
-        {/* Danger Zone (Delete board) — добавлено */}
+        {/* Danger Zone (Delete board) — уже было добавлено */}
         <div className="lg:col-span-2">
           <Card className="border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-900/20">
             <CardHeader>

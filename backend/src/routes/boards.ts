@@ -1,3 +1,4 @@
+// src/routes/boards.ts
 import { Router, Response } from 'express';
 import { Board } from '../models/Board';
 import { Column } from '../models/Column';
@@ -8,6 +9,9 @@ import { requireAdmin } from '../middleware/auth';
 import { validate, createBoardSchema, updateBoardSchema, createColumnSchema } from '../middleware/validation';
 
 const router = Router();
+
+// Допустимые шаблоны в БД (enum)
+const ALLOWED_TEMPLATES = new Set(['kanban-basic', 'kanban-tj-tech', 'empty']);
 
 /** Общая проверка доступа к конкретной доске */
 const checkBoardAccess = async (user: any, boardKey: string) => {
@@ -106,6 +110,15 @@ router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequ
     if (!Array.isArray(body.owners)) body.owners = [];
     if (!Array.isArray(body.allowedGroupIds)) body.allowedGroupIds = [];
 
+    // ✅ НОРМАЛИЗАЦИЯ TEMPLATE (UI → enum БД)
+    // Если прилетело 'expenses-default' или любое невалидное — ставим 'kanban-basic'
+    const incomingTemplate = String(body.template || '').trim();
+    if (String(body.type || '') === 'expenses') {
+      body.template = 'kanban-basic';
+    } else {
+      body.template = ALLOWED_TEMPLATES.has(incomingTemplate) ? incomingTemplate : 'kanban-basic';
+    }
+
     // Проверка уникальности ключа
     const existing = await Board.findOne({ key: body.key });
     if (existing) {
@@ -119,7 +132,6 @@ router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequ
     res.status(201).json(board);
   } catch (e: any) {
     console.error('Create board error:', e);
-    // отдадим причину, чтобы в Network было видно
     res.status(400).json({ error: e?.message || 'Bad Request' });
   }
 });
@@ -128,12 +140,31 @@ router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequ
 router.patch('/:id', requireAdmin, validate(updateBoardSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const update = req.body;
+    const update = req.body || {};
 
     const board = await Board.findOne({ id });
     if (!board) {
       res.status(404).json({ error: 'Board not found' });
       return;
+    }
+
+    // ✅ НОРМАЛИЗАЦИЯ TEMPLATE при апдейте
+    if (typeof update.template === 'string') {
+      const incomingTemplate = String(update.template).trim();
+
+      const effectiveType = typeof update.type === 'string' ? update.type : board.type;
+      if (String(effectiveType) === 'expenses') {
+        update.template = 'kanban-basic';
+      } else {
+        update.template = ALLOWED_TEMPLATES.has(incomingTemplate) ? incomingTemplate : 'kanban-basic';
+      }
+    }
+
+    // ⚠️ Нормализуем allowedRoles к lowercase
+    if (Array.isArray(update.allowedRoles)) {
+      update.allowedRoles = update.allowedRoles
+        .filter((r: unknown) => typeof r === 'string')
+        .map((r: string) => r.trim().toLowerCase());
     }
 
     Object.assign(board, update);
