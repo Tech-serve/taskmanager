@@ -13,6 +13,18 @@ const router = Router();
 // Допустимые шаблоны в БД (enum)
 const ALLOWED_TEMPLATES = new Set(['kanban-basic', 'kanban-tj-tech', 'empty']);
 
+/** ==================== НОРМАЛИЗАЦИЯ РОЛЕЙ (добавлено) ==================== */
+const canon = (s: unknown) => String(s || '').trim().toLowerCase();
+const variants = (s: unknown) => {
+  const base = canon(s);
+  const withUnderscore = base.replace(/[\s-]+/g, '_');
+  const withSpace = base.replace(/[_-]+/g, ' ');
+  return Array.from(new Set([base, withUnderscore, withSpace]));
+};
+const expandRoles = (arr: unknown[]) =>
+  Array.from(new Set((Array.isArray(arr) ? arr : []).flatMap(variants)));
+/** ======================================================================= */
+
 /** Общая проверка доступа к конкретной доске */
 const checkBoardAccess = async (user: any, boardKey: string) => {
   const key = String(boardKey || '').toUpperCase();
@@ -27,9 +39,13 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
     return board;
   }
 
-  // Доступ по ролям доски
-  if (Array.isArray(board.allowedRoles) && board.allowedRoles.some((r: string) => user.roles.includes(r))) {
-    return board;
+  // Доступ по ролям доски (учёт разных вариантов написания ключей роли)
+  const userRoleSet = new Set(expandRoles(user.roles || []));
+  const boardRoleSet = new Set(
+    expandRoles((board as any).allowedRoles || (board as any).allowed_roles || [])
+  );
+  for (const r of boardRoleSet) {
+    if (userRoleSet.has(r)) return board;
   }
 
   // Члены или владельцы
@@ -50,8 +66,11 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     let query: any = {};
 
     if (!user.roles.includes(Role.ADMIN)) {
+      const roleAliases = expandRoles(user.roles || []);
       const or: any[] = [
-        { allowedRoles: { $in: user.roles } },
+        // поддерживаем и camelCase, и legacy snake_case (добавлено)
+        { allowedRoles: { $in: roleAliases } },
+        { allowed_roles: { $in: roleAliases } },
         { members: user.id },
         { owners: user.id },
       ];
@@ -336,12 +355,13 @@ router.get('/:boardKey/assignable-users', async (req: AuthRequest, res: Response
     const board = await Board.findOne({ key }).lean();
     if (!board) return res.status(404).json({ error: 'Board not found' });
 
+    const roleAliases = expandRoles((board as any).allowedRoles || (board as any).allowed_roles || []);
     const or: any[] = [];
-    if (Array.isArray(board.allowedRoles) && board.allowedRoles.length) {
-      or.push({ roles: { $in: board.allowedRoles } });
+    if (roleAliases.length) {
+      or.push({ roles: { $in: roleAliases } });
     }
-    if (Array.isArray(board.allowedGroupIds) && board.allowedGroupIds.length) {
-      or.push({ groups: { $in: board.allowedGroupIds } });
+    if (Array.isArray((board as any).allowedGroupIds) && (board as any).allowedGroupIds.length) {
+      or.push({ groups: { $in: (board as any).allowedGroupIds } });
     }
     if (Array.isArray(board.members) && board.members.length) {
       or.push({ id: { $in: board.members } });

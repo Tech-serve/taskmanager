@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom'; // ← добавлено
+import { useNavigate } from 'react-router-dom';
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -8,17 +8,12 @@ import { Switch } from './ui/switch';
 import { Badge } from './ui/badge';
 import { boardsAPI, columnsAPI, rolesAPI } from '../lib/api';
 import { toast } from 'sonner';
-import {
-  Settings,
-  Plus,
-  Trash2,
-  Eye,
-  Save,
-  X,
-} from 'lucide-react';
+import { Settings, Plus, Trash2, Eye, Save, X } from 'lucide-react';
 
 const BoardSettings = ({ board, onUpdate, onClose }) => {
-  const navigate = useNavigate(); 
+  const navigate = useNavigate();
+
+  const normalizeRole = (k) => String(k || '').trim().toLowerCase();
 
   const [boardData, setBoardData] = useState({
     name: board?.name || '',
@@ -43,19 +38,18 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   const [columns, setColumns] = useState([]);
   const [newColumn, setNewColumn] = useState({ key: '', name: '', order: 0 });
   const [loading, setLoading] = useState(false);
-
   const [markForDeletion, setMarkForDeletion] = useState(false);
 
-  const [allRoles, setAllRoles] = useState([]);
+  const [allRoles, setAllRoles] = useState([]);   // список из /admin/roles (только для админов)
+  const [roleListReady, setRoleListReady] = useState(false); // чтобы не дёргать лишний раз
 
   const boardTypes = [
     { value: 'tasks',    label: 'Task Board' },
     { value: 'expenses', label: 'Expense Board' },
   ];
 
-  // ===== ДИНАМИЧЕСКИЕ ТЕМПЛЕЙТЫ (как и в CreateBoard) =====
   const BASE_TEMPLATES = [
-    { value: 'kanban-basic',  label: 'Basic Kanban',  description: 'Simple workflow for general tasks', icon: '📋' },
+    { value: 'kanban-basic', label: 'Basic Kanban', description: 'Simple workflow for general tasks', icon: '📋' },
   ];
 
   const EXPENSES_TEMPLATE = {
@@ -66,7 +60,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   };
 
   const templates = (boardData.type === 'expenses') ? [EXPENSES_TEMPLATE] : BASE_TEMPLATES;
-  // =========================================================
 
   useEffect(() => {
     if (board?.id) fetchColumns();
@@ -79,6 +72,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
     }));
   }, [board?.allowed_roles, board?.allowedRoles]);
 
+  // если вдруг тип изменился — держим корректный template для UI
   useEffect(() => {
     setBoardData(prev => {
       if (prev.type === 'expenses' && prev.template !== 'expenses-default') {
@@ -91,6 +85,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
     });
   }, [boardData.type]);
 
+  // безопасная загрузка ролей: если 403 — просто не показываем список (и без ошибок в консоли)
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -98,7 +93,10 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
         const r = await rolesAPI.list();
         const items = (r.data || []).filter((x) => x.isActive !== false);
         if (mounted) setAllRoles(items);
-      } catch {
+      } catch (err) {
+        // если не админ — бэк вернёт 403. Тихо игнорируем.
+      } finally {
+        if (mounted) setRoleListReady(true);
       }
     })();
     return () => { mounted = false; };
@@ -117,7 +115,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   const handleSaveBoard = async () => {
     setLoading(true);
     try {
-      // ####### УДАЛЕНИЕ ДОСКИ (добавлено) #######
       if (markForDeletion) {
         const ok = window.confirm(
           `Delete board "${board?.name || boardData.name}" permanently?\nAll its columns and tasks will be removed. This cannot be undone.`
@@ -128,17 +125,24 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
         toast.success('Board deleted');
         onClose?.();
         navigate('/');
-        return; 
+        return;
       }
-     
+
+      const normalizedRoles = (boardData.allowed_roles || []).map(normalizeRole);
+      const normalizedTemplate =
+        boardData.template === 'expenses-default' ? 'kanban-basic' : boardData.template;
+
       const payload = {
         ...boardData,
-        allowedRoles: boardData.allowed_roles,
-        allowed_roles: boardData.allowed_roles,
+        template: normalizedTemplate,
+        allowedRoles: normalizedRoles,
+        allowed_roles: normalizedRoles,
       };
 
-      await boardsAPI.update(board.id, payload);
-      onUpdate?.(payload);
+      const { data: updatedBoard } = await boardsAPI.update(board.id, payload);
+      const safeUpdated = updatedBoard && updatedBoard.id ? updatedBoard : { ...board, ...payload };
+
+      onUpdate?.(safeUpdated);
       toast.success('Board settings updated successfully');
     } catch (error) {
       toast.error(markForDeletion ? 'Failed to delete board' : 'Failed to update board settings');
@@ -179,8 +183,9 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
 
   const toggleRole = (roleKey) => {
     setBoardData((prev) => {
-      const set = new Set(prev.allowed_roles);
-      set.has(roleKey) ? set.delete(roleKey) : set.add(roleKey);
+      const key = normalizeRole(roleKey);
+      const set = new Set((prev.allowed_roles || []).map(normalizeRole));
+      set.has(key) ? set.delete(key) : set.add(key);
       return { ...prev, allowed_roles: Array.from(set) };
     });
   };
@@ -262,23 +267,40 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* Allowed Roles from Roles collection */}
+            {/* Если список ролей доступен (админ) — показываем тумблеры.
+                Если нет (403) — показываем просто текущие allowed_roles (read-only). */}
             <div>
               <Label className="text-sm font-medium text-gray-700 dark:text-white">Allowed Roles</Label>
 
-              {allRoles.length === 0 ? (
-                <div className="text-sm text-gray-500 dark:text-gray-200 mt-2">
-                  No roles defined yet. Create roles in <b>Admin Settings → Roles</b>.
+              {roleListReady && allRoles.length === 0 ? (
+                <div className="mt-2">
+                  {(boardData.allowed_roles || []).length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {boardData.allowed_roles.map((rk) => (
+                        <Badge key={rk} variant="outline" className="dark:border-gray-300 dark:text-white">
+                          {rk}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-500 dark:text-gray-200">
+                      No roles list available.
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 dark:text-gray-200 mt-1">
+                    Only admins can edit the roles list.
+                  </p>
                 </div>
               ) : (
                 <div className="flex flex-wrap gap-2 mt-2">
                   {allRoles.map((r) => {
-                    const active = boardData.allowed_roles.includes(r.key);
+                    const key = normalizeRole(r.key);
+                    const active = (boardData.allowed_roles || []).map(normalizeRole).includes(key);
                     return (
                       <button
                         key={r.id}
                         type="button"
-                        onClick={() => toggleRole(r.key)}
+                        onClick={() => toggleRole(key)}
                         className={
                           'px-2.5 py-1.5 rounded-md text-sm border transition ' +
                           (active
@@ -288,7 +310,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
                         title={r.description || r.name}
                       >
                         {r.name}
-                        <span className="opacity-70 ml-1 text-xs">({r.key})</span>
+                        <span className="opacity-70 ml-1 text-xs">({key})</span>
                       </button>
                     );
                   })}
@@ -344,7 +366,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             <CardTitle className="text-gray-900 dark:text-white">Column Management</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* Existing Columns */}
             <div className="space-y-2">
               {columns.map((column, index) => (
                 <div
@@ -370,7 +391,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
               ))}
             </div>
 
-            {/* Add New Column */}
             <div className="border-t dark:border-gray-400 pt-4">
               <div className="grid grid-cols-2 gap-2 mb-2">
                 <Input
@@ -394,7 +414,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
           </CardContent>
         </Card>
 
-        {/* Danger Zone (Delete board) — уже было добавлено */}
+        {/* Danger Zone */}
         <div className="lg:col-span-2">
           <Card className="border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-900/20">
             <CardHeader>
@@ -410,11 +430,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
                   </div>
                 </div>
                 <div className="flex items-center">
-                  <Switch
-                    id="delete-board"
-                    checked={markForDeletion}
-                    onCheckedChange={setMarkForDeletion}
-                  />
+                  <Switch id="delete-board" checked={markForDeletion} onCheckedChange={setMarkForDeletion} />
                   <Label htmlFor="delete-board" className="ml-2 text-red-700 dark:text-red-300">
                     Delete
                   </Label>
@@ -423,7 +439,6 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             </CardContent>
           </Card>
         </div>
-        {/* /Danger Zone */}
       </div>
     </div>
   );

@@ -1,4 +1,3 @@
-// src/components/CreateBoard.jsx
 import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
@@ -14,15 +13,13 @@ import { Plus, Kanban, CheckCircle, ArrowRight } from 'lucide-react';
 const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
   const [step, setStep] = useState(1);
 
-  // ВАЖНО: разделяем "UI-шаблон" и "бэкенд-шаблон"
-  // uiTemplate: что выбирает пользователь (может быть 'expenses-default')
-  // boardData.template: что реально уходит на бэк (валидный enum)
+  // UI-шаблон vs бэкенд-шаблон
   const [boardData, setBoardData] = useState({
     name: '',
     key: '',
     type: 'tasks',            // "tasks" | "expenses"
-    template: 'kanban-basic', // то, что уходит на бэк (валидный enum)
-    allowed_roles: ['admin'], // UI-стейт (snake) -> на бэк пойдёт allowedRoles (camel)
+    template: 'kanban-basic', // валидный enum для бэка
+    allowed_roles: ['admin'],
     description: '',
     settings: {
       assignee_enabled: true,
@@ -47,14 +44,14 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
   useEffect(() => {
     (async () => {
       try {
-        const r = await rolesAPI.list(); // GET /api/admin/roles
+        const r = await rolesAPI.list(); // доступно только админам
         const arr = (r?.data || [])
           .filter(x => x.isActive !== false)
           .map(x => String(x.key || '').toLowerCase())
           .filter(Boolean);
         if (arr.length) setAvailableRoles(arr);
       } catch {
-        // оставляем дефолтные
+        // если не админ — оставляем дефолтный список, без ошибок в консоли
       }
     })();
   }, []);
@@ -64,7 +61,6 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
     { value: 'expenses', label: 'Expense Board', description: 'Track expenses and approvals', icon: '💰' },
   ];
 
-  // БАЗОВЫЕ ШАБЛОНЫ ДЛЯ TASKS
   const BASE_TEMPLATES = [
     {
       value: 'kanban-basic',
@@ -80,7 +76,6 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
     },
   ];
 
-  // ФИКСИРОВАННЫЙ ШАБЛОН ДЛЯ EXPENSES (UI-метка)
   const EXPENSES_TEMPLATE = {
     value: 'expenses-default',
     label: 'Expenses (fixed)',
@@ -95,31 +90,27 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
 
   const templates = (boardData.type === 'expenses') ? [EXPENSES_TEMPLATE] : BASE_TEMPLATES;
 
-  // ЕДИНСТВЕННОЕ место, где маппим UI → backend-safe
   const mapTemplateForBackend = (uiValue) => {
     if (uiValue === 'expenses-default') return 'kanban-basic';
-    // в будущем, если будет 'cross-team' и т.д., мапим сюда же
-    return uiValue; // 'kanban-basic' | др. валидные
+    return uiValue;
   };
 
-  // Если меняется тип доски — синхронизируем UI и backend-поля + колонки
   useEffect(() => {
     if (boardData.type === 'expenses') {
-      setUiTemplate('expenses-default');                 // показываем один пункт
-      setBoardData(prev => ({ ...prev, template: 'kanban-basic' })); // на бэк пойдёт валидное
+      setUiTemplate('expenses-default');
+      setBoardData(prev => ({ ...prev, template: 'kanban-basic' }));
       setColumns(EXPENSES_TEMPLATE.columns);
     } else {
-      // возвращаемся к обычному канбану
       setUiTemplate('kanban-basic');
       setBoardData(prev => ({ ...prev, template: 'kanban-basic' }));
       setColumns(BASE_TEMPLATES[0].columns);
     }
-  }, [boardData.type]); // тут безопасно, без лишних зависимостей
+  }, [boardData.type]);
 
   const handleTemplateSelect = (templateValue) => {
-    setUiTemplate(templateValue);                         // что видит пользователь
+    setUiTemplate(templateValue);
     const backendTemplate = mapTemplateForBackend(templateValue);
-    setBoardData(prev => ({ ...prev, template: backendTemplate })); // что уйдёт на бэк
+    setBoardData(prev => ({ ...prev, template: backendTemplate }));
 
     const template = templates.find(t => t.value === templateValue);
     setColumns(template?.columns || []);
@@ -139,10 +130,7 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
 
   const addColumn = () => {
     const next = columns.length + 1;
-    setColumns(prev => [
-      ...prev,
-      { key: `COL_${next}`, name: `Column ${next}`, order: next },
-    ]);
+    setColumns(prev => [...prev, { key: `COL_${next}`, name: `Column ${next}`, order: next }]);
   };
 
   const updateColumn = (index, field, value) => {
@@ -157,9 +145,7 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
   };
 
   const removeColumn = (index) => {
-    setColumns(prev =>
-      prev.filter((_, i) => i !== index).map((col, i) => ({ ...col, order: i + 1 }))
-    );
+    setColumns(prev => prev.filter((_, i) => i !== index).map((col, i) => ({ ...col, order: i + 1 })));
   };
 
   const handleCreateBoard = async () => {
@@ -177,9 +163,8 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
       const payload = {
         name: boardData.name,
         key: String(boardData.key).toUpperCase(),
-        type: boardData.type,                 // "tasks" | "expenses"
-        template: boardData.template,         // уже backend-safe
-        // на бэк camelCase + lower-case
+        type: boardData.type,
+        template: boardData.template, // уже backend-safe
         allowedRoles: boardData.allowed_roles.map(r => String(r).toLowerCase()),
         description: boardData.description,
         settings: {
@@ -195,10 +180,9 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
         allowedGroupIds: [],
       };
 
-      const response = await boardsAPI.create(payload); // POST /api/boards
+      const response = await boardsAPI.create(payload);
       const createdBoard = response.data;
 
-      // создать колонки (если есть)
       if (columns.length > 0) {
         for (const column of columns) {
           await columnsAPI.create(createdBoard.id, {
@@ -213,13 +197,12 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
       onBoardCreated?.(createdBoard);
       onOpenChange?.(false);
 
-      // reset
       setStep(1);
       setBoardData({
         name: '',
         key: '',
         type: 'tasks',
-        template: 'kanban-basic', // backend-safe
+        template: 'kanban-basic',
         allowed_roles: ['admin'],
         description: '',
         settings: {
@@ -243,7 +226,7 @@ const CreateBoard = ({ open, onOpenChange, onBoardCreated }) => {
           name: boardData.name,
           key: String(boardData.key).toUpperCase(),
           type: boardData.type,
-          template: boardData.template, // тут уже backend-safe
+          template: boardData.template,
           allowedRoles: boardData.allowed_roles.map(r => String(r).toLowerCase()),
         },
       });
