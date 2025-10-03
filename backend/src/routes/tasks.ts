@@ -4,12 +4,14 @@ import { Board } from '../models/Board';
 import { Column } from '../models/Column';
 import { AuthRequest, Role } from '../types';
 import { validate, createTaskSchema, updateTaskSchema } from '../middleware/validation';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // Helper function to check board access (same as in boards.ts)
 const checkBoardAccess = async (user: any, boardKey: string) => {
-  const board = await Board.findOne({ key: boardKey });
+  const key = String(boardKey || '').toUpperCase();
+  const board = await Board.findOne({ key });
   if (!board) {
     return null;
   }
@@ -20,7 +22,7 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
   }
 
   // Buyers can access BUY, TECH, DES boards
-  if (user.roles.includes(Role.BUYER) && ['BUY', 'TECH', 'DES'].includes(boardKey)) {
+  if (user.roles.includes(Role.BUYER) && ['BUY', 'TECH', 'DES'].includes(key)) {
     return board;
   }
 
@@ -41,15 +43,16 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
   return null;
 };
 
-// Moved to boards.ts as /:boardKey/tasks
-
 // @route   POST /api/tasks
 // @desc    Create new task
 // @access  Private
 router.post('/', validate(createTaskSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const taskData = req.body;
     const user = req.user!;
+    const taskData = { ...(req.body || {}) };
+
+    // normalize input
+    taskData.boardKey = String(taskData.boardKey || '').toUpperCase();
 
     // Check board access
     const board = await checkBoardAccess(user, taskData.boardKey);
@@ -65,6 +68,15 @@ router.post('/', validate(createTaskSchema), async (req: AuthRequest, res: Respo
       return;
     }
 
+    // Soft normalize for expenses: amount/category
+    if (taskData.amount !== undefined) {
+      const n = Number(taskData.amount);
+      taskData.amount = Number.isFinite(n) ? n : 0;
+    }
+    if (taskData.category !== undefined && taskData.category !== null) {
+      taskData.category = String(taskData.category);
+    }
+
     // Create task
     const task = new Task({
       ...taskData,
@@ -72,9 +84,14 @@ router.post('/', validate(createTaskSchema), async (req: AuthRequest, res: Respo
     });
 
     await task.save();
-    res.status(201).json(task);
-  } catch (error) {
+    res.status(201).json(task.toJSON());
+  } catch (error: any) {
     console.error('Create task error:', error);
+    // Mongoose validation error → 400
+    if (error?.name === 'ValidationError') {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -85,7 +102,7 @@ router.post('/', validate(createTaskSchema), async (req: AuthRequest, res: Respo
 router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    const updateData = { ...(req.body || {}) };
     const user = req.user!;
 
     // Find existing task
@@ -102,17 +119,18 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
       return;
     }
 
-    // Handle cross-team routing when moving to specific columns
+    const isAdmin = user.roles.includes(Role.ADMIN);
+
+    // Cross-team routing when moving to specific columns
     if (updateData.columnId) {
       const newColumn = await Column.findOne({ id: updateData.columnId });
       if (newColumn) {
         const columnKey = newColumn.key;
         const currentBoardKey = task.boardKey;
-        
+
         let newBoardKey: string | null = null;
         let targetColumnKey: string | null = null;
 
-        // Cross-team routing logic
         if (columnKey === 'TO_TECH' && currentBoardKey !== 'TECH') {
           newBoardKey = 'TECH';
           targetColumnKey = 'TODO';
@@ -121,7 +139,6 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
           targetColumnKey = 'QUEUE';
         }
 
-        // If cross-team routing is needed
         if (newBoardKey && targetColumnKey) {
           const targetBoard = await Board.findOne({ key: newBoardKey });
           const targetColumn = await Column.findOne({
@@ -130,7 +147,6 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
           });
 
           if (targetBoard && targetColumn) {
-            // Update task to move to target board and column
             task.boardKey = newBoardKey;
             task.columnId = targetColumn.id;
             task.routedFrom = {
@@ -139,27 +155,90 @@ router.patch('/:id', validate(updateTaskSchema), async (req: AuthRequest, res: R
               userName: user.fullName,
               routedAt: new Date()
             };
-            task.updatedAt = new Date();
-
-            // Apply other updates if provided
+            // merge other updates (but keep column/board from routing)
             Object.assign(task, { ...updateData, columnId: targetColumn.id, boardKey: newBoardKey });
+            task.updatedAt = new Date();
             await task.save();
-
-            res.json(task);
+            res.json(task.toJSON());
             return;
           }
         }
       }
     }
 
-    // Normal task update (no cross-team routing)
+    // Soft normalization for expenses fields
+    if (updateData.amount !== undefined) {
+      const n = Number(updateData.amount);
+      updateData.amount = Number.isFinite(n) ? n : 0;
+    }
+    if (updateData.category !== undefined && updateData.category !== null) {
+      updateData.category = String(updateData.category);
+    }
+
+    // Permissions:
+    // admin — всё; иначе автор/ассайни
+    if (!isAdmin) {
+      const isCreatorOrAssignee = [task.creatorId, task.assigneeId].includes(user.id);
+      if (!isCreatorOrAssignee) {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+    }
+
     Object.assign(task, updateData);
     task.updatedAt = new Date();
     await task.save();
 
-    res.json(task);
+    res.json(task.toJSON());
   } catch (error) {
     console.error('Update task error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// @route   POST /api/tasks/:id/comments
+// @desc    Add comment to a task
+// @access  Private
+router.post('/:id/comments', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = req.user!;
+    const { id } = req.params;
+    const { text } = req.body || {};
+
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      res.status(400).json({ error: 'Text is required' });
+      return;
+    }
+
+    const task = await Task.findOne({ id });
+    if (!task) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+
+    // Access check to the task's board
+    const board = await checkBoardAccess(user, task.boardKey);
+    if (!board) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    const comment = {
+      id: uuidv4(),
+      authorId: user.id,
+      authorName: user.fullName,
+      text: text.trim(),
+      createdAt: new Date(),
+    };
+
+    task.comments = task.comments || [];
+    task.comments.push(comment as any);
+    task.updatedAt = new Date();
+    await task.save();
+
+    res.status(201).json(comment);
+  } catch (error) {
+    console.error('Add comment error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -178,7 +257,6 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
       return;
     }
 
-    // Check permissions: admin, task creator, or board owner
     const board = await Board.findOne({ key: task.boardKey });
     if (!user.roles.includes(Role.ADMIN) &&
         task.creatorId !== user.id &&
@@ -203,7 +281,7 @@ router.get('/me/tasks', async (req: AuthRequest, res: Response): Promise<void> =
     const user = req.user!;
 
     // Get accessible boards
-    let boardQuery = {};
+    let boardQuery: any = {};
     if (!user.roles.includes(Role.ADMIN)) {
       if (user.roles.includes(Role.BUYER)) {
         boardQuery = { key: { $in: ['BUY', 'TECH', 'DES'] } };
@@ -219,7 +297,7 @@ router.get('/me/tasks', async (req: AuthRequest, res: Response): Promise<void> =
     }
 
     const accessibleBoards = await Board.find(boardQuery).select('key');
-    const accessibleBoardKeys = accessibleBoards.map(board => board.key);
+    const accessibleBoardKeys = accessibleBoards.map(b => b.key);
 
     // Get tasks assigned to user from accessible boards
     const tasks = await Task.find({
@@ -227,7 +305,7 @@ router.get('/me/tasks', async (req: AuthRequest, res: Response): Promise<void> =
       boardKey: { $in: accessibleBoardKeys }
     }).sort({ createdAt: -1 });
 
-    res.json(tasks);
+    res.json(tasks.map(t => t.toJSON()));
   } catch (error) {
     console.error('Get my tasks error:', error);
     res.status(500).json({ error: 'Internal server error' });

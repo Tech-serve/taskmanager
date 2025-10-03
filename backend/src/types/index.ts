@@ -91,6 +91,14 @@ export interface IColumn extends Document {
   updatedAt: Date;
 }
 
+export interface ITaskComment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  createdAt: Date;
+}
+
 export interface ITask extends Document {
   _id: Types.ObjectId;
   id: string;
@@ -113,6 +121,7 @@ export interface ITask extends Document {
     userName: string;
     routedAt: Date;
   };
+  comments?: ITaskComment[];
   createdAt: Date;
   updatedAt: Date;
 }

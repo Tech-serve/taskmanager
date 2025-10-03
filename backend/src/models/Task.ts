@@ -2,6 +2,17 @@ import mongoose, { Schema } from 'mongoose';
 import { ITask, Priority, Department } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
+const CommentSchema = new Schema(
+  {
+    id: { type: String, default: () => uuidv4() },
+    authorId: { type: String, required: true },
+    authorName: { type: String, required: true },
+    text: { type: String, required: true, trim: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const taskSchema = new Schema<ITask>(
   {
     id: {
@@ -66,12 +77,12 @@ const taskSchema = new Schema<ITask>(
         // Sweep Stakes
         'sweep_accounts', 'sweep_proxy_domains', 'sweep_services', 'sweep_fakes', 'sweep_other',
         // IGaming
-        'igaming_fb_accounts', 'igaming_uac_accounts', 'igaming_creatives', 'igaming_google_play', 
+        'igaming_fb_accounts', 'igaming_uac_accounts', 'igaming_creatives', 'igaming_google_play',
         'igaming_services', 'igaming_proxy_domains', 'igaming_other',
         // HR Department
         'hr_vacancies', 'hr_candidates', 'hr_services', 'hr_polygraph', 'hr_books', 'hr_team_building', 'hr_other',
         // Office
-        'office_household', 'office_food_water', 'office_services', 'office_hookah', 
+        'office_household', 'office_food_water', 'office_services', 'office_hookah',
         'office_furniture', 'office_repair_security', 'office_charity', 'office_other'
       ]
     },
@@ -83,12 +94,16 @@ const taskSchema = new Schema<ITask>(
       userId: String,
       userName: String,
       routedAt: Date
+    },
+    comments: {
+      type: [CommentSchema],
+      default: []
     }
   },
   {
     timestamps: true,
     toJSON: {
-      transform: (doc, ret) => {
+      transform: (_doc, ret) => {
         delete (ret as any)._id;
         delete (ret as any).__v;
         return ret;
