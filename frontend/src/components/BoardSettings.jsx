@@ -1,4 +1,6 @@
+// src/components/BoardSettings.jsx
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom'; // ← добавлено
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -20,6 +22,8 @@ import {
 } from 'lucide-react';
 
 const BoardSettings = ({ board, onUpdate, onClose }) => {
+  const navigate = useNavigate(); // ← добавлено
+
   const [boardData, setBoardData] = useState({
     name: board?.name || '',
     key: board?.key || '',
@@ -44,6 +48,9 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   const [columns, setColumns] = useState([]);
   const [newColumn, setNewColumn] = useState({ key: '', name: '', order: 0 });
   const [loading, setLoading] = useState(false);
+
+  // ↓↓↓ добавлено только это состояние
+  const [markForDeletion, setMarkForDeletion] = useState(false);
 
   // << новый единый источник ролей
   const [allRoles, setAllRoles] = useState([]);
@@ -99,6 +106,22 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   const handleSaveBoard = async () => {
     setLoading(true);
     try {
+      // ####### УДАЛЕНИЕ ДОСКИ (добавлено) #######
+      if (markForDeletion) {
+        const ok = window.confirm(
+          `Delete board "${board?.name || boardData.name}" permanently?\nAll its columns and tasks will be removed. This cannot be undone.`
+        );
+        if (!ok) { setLoading(false); return; }
+
+        await boardsAPI.delete(board.id);
+        toast.success('Board deleted');
+        onClose?.();
+        // если открыт был сам борд — уходим на главную
+        navigate('/');
+        return; // чтобы не падать дальше в обычное сохранение
+      }
+      // ####### КОНЕЦ ДОБАВКИ #######
+
       // отправляем оба ключа для совместимости camel/snake
       const payload = {
         ...boardData,
@@ -110,7 +133,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
       onUpdate?.(payload);
       toast.success('Board settings updated successfully');
     } catch (error) {
-      toast.error('Failed to update board settings');
+      toast.error(markForDeletion ? 'Failed to delete board' : 'Failed to update board settings');
     } finally {
       setLoading(false);
     }
@@ -174,10 +197,10 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
           <Button
             onClick={handleSaveBoard}
             disabled={loading}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
+            className={`text-white ${markForDeletion ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
           >
             <Save className="w-4 h-4 mr-2" />
-            {loading ? 'Saving...' : 'Save Changes'}
+            {loading ? (markForDeletion ? 'Deleting…' : 'Saving...') : (markForDeletion ? 'Delete' : 'Save Changes')}
           </Button>
         </div>
       </div>
@@ -394,6 +417,37 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Danger Zone (Delete board) — добавлено */}
+        <div className="lg:col-span-2">
+          <Card className="border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-900/20">
+            <CardHeader>
+              <CardTitle className="text-red-700 dark:text-red-300">Danger Zone</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="font-medium text-red-700 dark:text-red-300">Delete this board</div>
+                  <div className="text-sm text-red-600/80 dark:text-red-400/80">
+                    Permanently removes the board, its columns and tasks. Can’t be undone.<br />
+                    Turn on the toggle and press <b>Save</b>.
+                  </div>
+                </div>
+                <div className="flex items-center">
+                  <Switch
+                    id="delete-board"
+                    checked={markForDeletion}
+                    onCheckedChange={setMarkForDeletion}
+                  />
+                  <Label htmlFor="delete-board" className="ml-2 text-red-700 dark:text-red-300">
+                    Delete
+                  </Label>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+        {/* /Danger Zone */}
       </div>
     </div>
   );
