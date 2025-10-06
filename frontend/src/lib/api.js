@@ -21,13 +21,11 @@ const toBackendTask = (data = {}) => {
 // чтобы React везде работал только с snake_case
 const fromBackendTask = (t = {}) => {
   const out = { ...t };
-
-  if ('boardKey' in out)  { out.board_key  = out.boardKey;  delete out.boardKey; }
-  if ('columnId' in out)  { out.column_id  = out.columnId;  delete out.columnId; }
-  if ('assigneeId' in out){ out.assignee_id= out.assigneeId;delete out.assigneeId; }
-  if ('dueDate' in out)   { out.due_date   = out.dueDate;   delete out.dueDate; }
-  if ('receiptUrl' in out){ out.receipt_url= out.receiptUrl;delete out.receiptUrl; }
-
+  if ('boardKey'  in out) { out.board_key   = out.boardKey;   delete out.boardKey; }
+  if ('columnId'  in out) { out.column_id   = out.columnId;   delete out.columnId; }
+  if ('assigneeId'in out) { out.assignee_id = out.assigneeId; delete out.assigneeId; }
+  if ('dueDate'   in out) { out.due_date    = out.dueDate;    delete out.dueDate; }
+  if ('receiptUrl'in out) { out.receipt_url = out.receiptUrl; delete out.receiptUrl; }
   return out;
 };
 
@@ -90,7 +88,7 @@ export const authAPI = {
 // ---------- Boards ----------
 export const boardsAPI = {
   getAll: () => api.get('/boards'),
-  getByKey: (key) => api.get(`/boards/by-key/${key}`),
+  getByKey: (key) => api.get(`/boards/by-key/${encodeURIComponent(String(key).toUpperCase())}`),
   create: (data) => api.post('/boards', data),
   update: (id, data) => api.patch(`/boards/${id}`, data),
   delete: (id) => api.delete(`/boards/${id}`),
@@ -122,20 +120,29 @@ const mapTaskFromBackend = (res) => {
 
 // ---------- Tasks ----------
 export const tasksAPI = {
-  // GET /boards/:boardKey/tasks
+  // GET /boards/:boardKey/tasks   (если этот маршрут у тебя есть на другом роутере)
   getByBoard: async (boardKey, params = {}) => {
+    const key = encodeURIComponent(String(boardKey).toUpperCase());
     const q = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
       if (v !== undefined && v !== null && v !== '') q.append(k, v);
     });
-    const url = `/boards/${boardKey}/tasks${q.toString() ? `?${q.toString()}` : ''}`;
+    const url = `/boards/${key}/tasks${q.toString() ? `?${q.toString()}` : ''}`;
     const res = await api.get(url);
-    return mapTasksArrayFromBackend(res); // <- теперь в data строго snake_case
+    return mapTasksArrayFromBackend(res);
   },
 
-  // POST /tasks
-  create: async (data) => {
-    const res = await api.post('/tasks', toBackendTask(data));
+  // POST /tasks  ← это соответствует твоему бэку (router.post('/', ...) в /api/tasks)
+  create: async (data = {}) => {
+    // базовая валидация на фронте — чтобы дать человеку быстрый фидбек
+    if (!data.board_key) throw new Error('tasksAPI.create: board_key is required');
+    if (!data.column_id) throw new Error('tasksAPI.create: column_id is required');
+    if (!data.title)     throw new Error('tasksAPI.create: title is required');
+
+    // приведение ключа борда к верхнему регистру (бэк тоже нормализует, но сделаем заранее)
+    const payload = toBackendTask({ ...data, board_key: String(data.board_key).toUpperCase() });
+
+    const res = await api.post('/tasks', payload);
     return mapTaskFromBackend(res);
   },
 
@@ -162,7 +169,7 @@ export const usersAPI = {
   // Тихий fallback: если бэка для assignable-users нет — берём /users
   getAssignableUsers: async (boardKey) => {
     try {
-      return await api.get(`/boards/${boardKey}/assignable-users`);
+      return await api.get(`/boards/${encodeURIComponent(String(boardKey).toUpperCase())}/assignable-users`);
     } catch {
       return await api.get('/users');
     }

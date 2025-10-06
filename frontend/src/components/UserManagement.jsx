@@ -279,10 +279,6 @@ const confirmDeleteUser = async () => {
     <div className="p-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">User Management</h2>
-          <p className="text-gray-600">Manage users, roles, and permissions</p>
-        </div>
         <Button 
           onClick={handleAddUser}
           className="bg-indigo-600 hover:bg-indigo-700"

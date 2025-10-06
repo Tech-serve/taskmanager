@@ -37,7 +37,8 @@ const TaskModal = ({
   defaultBoardKey,
   defaultColumnId,
 }) => {
-  const safeTask = task || {};
+  // Важно: мемоизируем, чтобы в режиме создания {} не создавался заново на каждом рендере
+  const safeTask = useMemo(() => task || {}, [task]);
   const isEdit = Boolean(safeTask.id);
 
   const [saving, setSaving] = useState(false);
@@ -83,7 +84,8 @@ const TaskModal = ({
       setForm(emptyForm);
       setNewComment(''); // при создании тоже можно сразу написать
     }
-  }, [isOpen, isEdit, safeTask, emptyForm]);
+    // Важно: завязываемся на task (а не на "сырой" объект {}), чтобы не было бесконечных ресетов
+  }, [isOpen, isEdit, task, emptyForm]);
 
   const setField = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
