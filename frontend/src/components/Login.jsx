@@ -28,8 +28,7 @@ const Login = ({ onLogin }) => {
     try {
       const response = await authAPI.login(formData.email, formData.password);
       const { access_token, user } = response.data;
-      
-      onLogin(access_token, user);
+      onLogin(access_token, user); // App сохранит токен и приведёт роли к канону
       toast.success('Welcome back!');
     } catch (error) {
       toast.error('Invalid email or password');

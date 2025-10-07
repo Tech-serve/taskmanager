@@ -2,11 +2,10 @@
 import axios from 'axios';
 
 /**
- * UI работает со snake_case, бэкенд — с camelCase.
- * Эти адаптеры конвертируют данные туда/обратно.
+ * UI ↔ API адаптеры и безопасные обёртки
  */
 
-// → к бэку (snake → camel)
+// → к бэку (snake → camel) для Task
 const toBackendTask = (data = {}) => {
   const out = { ...data };
   if ('board_key'   in out) { out.boardKey   = out.board_key;   delete out.board_key; }
@@ -17,8 +16,7 @@ const toBackendTask = (data = {}) => {
   return out;
 };
 
-// ← из бэка (camel → snake), при этом camel-ключи удаляем,
-// чтобы React везде работал только с snake_case
+// ← из бэка (camel → snake) для Task
 const fromBackendTask = (t = {}) => {
   const out = { ...t };
   if ('boardKey'  in out) { out.board_key   = out.boardKey;   delete out.boardKey; }
@@ -29,17 +27,48 @@ const fromBackendTask = (t = {}) => {
   return out;
 };
 
-// Безопасные обёртки для окружений без window/localStorage (SSR/тесты)
+// ==== безопасные обёртки для window/localStorage ====
 const hasWindow = typeof window !== 'undefined' && typeof window.document !== 'undefined';
 const safeLocalStorage = {
   getItem(key) {
     try { return hasWindow && window.localStorage ? window.localStorage.getItem(key) : null; } catch { return null; }
+  },
+  setItem(key, val) {
+    try { if (hasWindow && window.localStorage) window.localStorage.setItem(key, val); } catch {}
   },
   removeItem(key) {
     try { if (hasWindow && window.localStorage) window.localStorage.removeItem(key); } catch {}
   }
 };
 
+// ==== роли: канонизация и объединение ====
+const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const ROLE_ALIASES = {
+  admin: 'admin',
+  buyer: 'buyer',
+  designer: 'designer',
+  tech: 'tech',
+  team_lead: 'team_lead',
+  'team-lead': 'team_lead',
+  teamlead: 'team_lead',
+  head: 'team_lead',
+  head_lead: 'team_lead',
+  headelite: 'team_lead',
+  'head-elite': 'team_lead',
+  tl: 'team_lead',
+};
+const canonRole = (r) => ROLE_ALIASES[norm(r)] ?? norm(r);
+const canonRoles = (arr) => Array.from(new Set((Array.isArray(arr) ? arr : []).map(canonRole)));
+
+const withEffectiveRoles = (userLike) => {
+  if (!userLike || typeof userLike !== 'object') return userLike;
+  const real = canonRoles(userLike.roles || []);
+  const extra = canonRoles(userLike.effective_roles || []);
+  const effective = Array.from(new Set([...real, ...extra]));
+  return { ...userLike, roles: real, effective_roles: effective };
+};
+
+// ==== axios базовая настройка ====
 const BASE = (process.env.REACT_APP_BACKEND_URL || '').replace(/\/+$/, '');
 const API_BASE = BASE ? `${BASE}/api` : '/api';
 
@@ -49,12 +78,14 @@ export const api = axios.create({
   withCredentials: true,
 });
 
+// токен → заголовок
 api.interceptors.request.use((config) => {
   const token = safeLocalStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
+// 401 → logout + редирект (кроме /auth/login)
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -75,14 +106,77 @@ api.interceptors.response.use(
   }
 );
 
+// ===== helpers для Tasks-ответов =====
+const mapTasksArrayFromBackend = (res) => {
+  if (Array.isArray(res.data)) {
+    res.data = res.data.map(fromBackendTask);
+  } else if (res.data && Array.isArray(res.data.data)) {
+    res.data.data = res.data.data.map(fromBackendTask);
+  }
+  return res;
+};
+const mapTaskFromBackend = (res) => {
+  if (res?.data && typeof res.data === 'object') {
+    res.data = fromBackendTask(res.data);
+  }
+  return res;
+};
+
+// ===== helpers для User-ответов (везде гарантируем effective_roles) =====
+const mapUserFromAuthLogin = (res) => {
+  // ожидаем { access_token, token_type, user: {...} }
+  if (res?.data?.user) {
+    // сохранить токен (если хочешь держать всё в api-слое)
+    if (res.data.access_token) {
+      safeLocalStorage.setItem('token', res.data.access_token);
+    }
+    res.data.user = withEffectiveRoles(res.data.user);
+  }
+  return res;
+};
+
+const mapUserFromAuthMe = (res) => {
+  // ожидаем профиль плоско: {...}
+  if (res?.data && typeof res.data === 'object') {
+    res.data = withEffectiveRoles(res.data);
+  }
+  return res;
+};
+
+const mapUsersArray = (res) => {
+  if (Array.isArray(res?.data)) {
+    res.data = res.data.map(withEffectiveRoles);
+  } else if (res?.data?.user) {
+    res.data.user = withEffectiveRoles(res.data.user);
+  }
+  return res;
+};
+
+// ==================== API ====================
+
 // ---------- Auth ----------
 export const authAPI = {
-  login: (email, password) => api.post('/auth/login', {
-    email: String(email ?? '').trim().toLowerCase(),
-    password: String(password ?? ''),
-  }),
-  register: (userData) => api.post('/auth/register', userData),
-  me: () => api.get('/auth/me'),
+  login: async (email, password) => {
+    const res = await api.post('/auth/login', {
+      email: String(email ?? '').trim().toLowerCase(),
+      password: String(password ?? ''),
+    });
+    return mapUserFromAuthLogin(res);
+  },
+  register: async (userData) => {
+    const res = await api.post('/auth/register', userData);
+    // бэк уже возвращает effective_roles, но нормализуем на всякий
+    if (res?.data && typeof res.data === 'object') {
+      res.data = withEffectiveRoles(res.data);
+    }
+    return res;
+  },
+  me: async () => {
+    const res = await api.get('/auth/me');
+    return mapUserFromAuthMe(res);
+  },
+  // опционально — logout helper
+  logout: () => safeLocalStorage.removeItem('token'),
 };
 
 // ---------- Boards ----------
@@ -102,25 +196,8 @@ export const columnsAPI = {
   delete: (id) => api.delete(`/columns/${id}`),
 };
 
-// Вспомогалки для Tasks
-const mapTasksArrayFromBackend = (res) => {
-  if (Array.isArray(res.data)) {
-    res.data = res.data.map(fromBackendTask);
-  } else if (res.data && Array.isArray(res.data.data)) {
-    res.data.data = res.data.data.map(fromBackendTask);
-  }
-  return res;
-};
-const mapTaskFromBackend = (res) => {
-  if (res?.data && typeof res.data === 'object') {
-    res.data = fromBackendTask(res.data);
-  }
-  return res;
-};
-
 // ---------- Tasks ----------
 export const tasksAPI = {
-  // GET /boards/:boardKey/tasks   (если этот маршрут у тебя есть на другом роутере)
   getByBoard: async (boardKey, params = {}) => {
     const key = encodeURIComponent(String(boardKey).toUpperCase());
     const q = new URLSearchParams();
@@ -132,21 +209,16 @@ export const tasksAPI = {
     return mapTasksArrayFromBackend(res);
   },
 
-  // POST /tasks  ← это соответствует твоему бэку (router.post('/', ...) в /api/tasks)
   create: async (data = {}) => {
-    // базовая валидация на фронте — чтобы дать человеку быстрый фидбек
     if (!data.board_key) throw new Error('tasksAPI.create: board_key is required');
     if (!data.column_id) throw new Error('tasksAPI.create: column_id is required');
     if (!data.title)     throw new Error('tasksAPI.create: title is required');
 
-    // приведение ключа борда к верхнему регистру (бэк тоже нормализует, но сделаем заранее)
     const payload = toBackendTask({ ...data, board_key: String(data.board_key).toUpperCase() });
-
     const res = await api.post('/tasks', payload);
     return mapTaskFromBackend(res);
   },
 
-  // PATCH /tasks/:id
   update: async (id, data) => {
     const res = await api.patch(`/tasks/${id}`, toBackendTask(data));
     return mapTaskFromBackend(res);
@@ -157,21 +229,31 @@ export const tasksAPI = {
   addComment: (taskId, commentData) => api.post(`/tasks/${taskId}/comments`, commentData),
 
   getMyTasks: async () => {
-    const res = await api.get('/me/tasks');
+    const res = await api.get('/tasks/me/tasks');;
     return mapTasksArrayFromBackend(res);
   },
 };
 
 // ---------- Users ----------
 export const usersAPI = {
-  getAll: () => api.get('/users'),
-  getById: (id) => api.get(`/users/${id}`),
-  // Тихий fallback: если бэка для assignable-users нет — берём /users
+  getAll: async () => {
+    const res = await api.get('/users');
+    return mapUsersArray(res);
+  },
+  getById: async (id) => {
+    const res = await api.get(`/users/${id}`);
+    return mapUsersArray(res);
+    // вернёт объект с effective_roles
+  },
+  // кандидаты для назначения
   getAssignableUsers: async (boardKey) => {
     try {
-      return await api.get(`/boards/${encodeURIComponent(String(boardKey).toUpperCase())}/assignable-users`);
+      const res = await api.get(`/boards/${encodeURIComponent(String(boardKey).toUpperCase())}/assignable-users`);
+      // эти ответы обычно короткие; если там есть roles — нормализуем
+      return mapUsersArray(res);
     } catch {
-      return await api.get('/users');
+      const res = await api.get('/users');
+      return mapUsersArray(res);
     }
   },
 };

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+// src/components/Navigation.jsx
+import React, { useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Button } from './ui/button';
 import { useTheme } from '../contexts/ThemeContext';
@@ -7,60 +8,82 @@ import {
   User, 
   LogOut, 
   Kanban,
-  Users,
   Settings,
-  Moon,
-  Sun,
   BarChart3
 } from 'lucide-react';
 import AdminSettings from './AdminSettings';
 
+// ==== канон ролей и алиасы ====
+const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const ROLE_ALIASES = {
+  admin: 'admin',
+  main_admin: 'admin',     // сводим к admin
+  lead: 'team_lead',       // сводим к team_lead
+  team_lead: 'team_lead',
+  'team-lead': 'team_lead',
+  teamlead: 'team_lead',
+  head: 'team_lead',
+  head_lead: 'team_lead',
+  headelite: 'team_lead',
+  'head-elite': 'team_lead',
+  tl: 'team_lead',
+  buyer: 'buyer',
+  designer: 'designer',
+  tech: 'tech',
+};
+const canonRole = (r) => ROLE_ALIASES[norm(r)] ?? norm(r);
+const canonRoles = (arr) => Array.from(new Set((Array.isArray(arr) ? arr : []).map(canonRole)));
+
+const roleTitle = (r) => {
+  const map = {
+    admin: 'Admin',
+    team_lead: 'Team Lead',
+    buyer: 'Buyer',
+    designer: 'Designer',
+    tech: 'Tech',
+  };
+  return map[r] || r;
+};
+
 const Navigation = ({ user, onLogout }) => {
   const location = useLocation();
-  const [showAdminSettings, setShowAdminSettings] = useState(false);
-  const { theme, toggleTheme } = useTheme();
+  const { theme, toggleTheme } = useTheme(); // оставил как было — вдруг используешь где-то
+  const [showAdminSettings, setShowAdminSettings] = useState(false); // ⬅️ вернул стейт
 
   const isActive = (path) => location.pathname === path;
 
-  const getRoleColor = (roles) => {
-    if (roles.includes('admin')) return 'from-violet-600 to-purple-600';
-    if (roles.includes('main_admin')) return 'from-amber-600 to-orange-600';
-    if (roles.includes('lead')) return 'from-cyan-600 to-teal-600';
-    if (roles.includes('buyer')) return 'from-emerald-600 to-green-600';
-    if (roles.includes('designer')) return 'from-rose-600 to-pink-600';
-    if (roles.includes('tech')) return 'from-blue-600 to-indigo-600';
+  // берём effective_roles (если есть) или roles, приводим к канону
+  const roles = useMemo(() => {
+    const raw = Array.isArray(user?.effective_roles) ? user.effective_roles : (user?.roles || []);
+    return canonRoles(raw);
+  }, [user]);
+
+  const getRoleColor = (canonRolesArr) => {
+    if (canonRolesArr.includes('admin'))      return 'from-violet-600 to-purple-600';
+    if (canonRolesArr.includes('team_lead'))  return 'from-cyan-600 to-teal-600';
+    if (canonRolesArr.includes('buyer'))      return 'from-emerald-600 to-green-600';
+    if (canonRolesArr.includes('designer'))   return 'from-rose-600 to-pink-600';
+    if (canonRolesArr.includes('tech'))       return 'from-blue-600 to-indigo-600';
     return 'from-gray-600 to-slate-600';
   };
 
   const getRoleBadgeColor = (role) => {
     const colors = {
       admin: 'bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200',
-      main_admin: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200',
-      lead: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-200',
+      team_lead: 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-200',
       buyer: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200',
       designer: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200',
-      tech: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200'
+      tech: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200',
     };
     return colors[role] || 'bg-gray-100 text-gray-800 dark:bg-gray-700/50 dark:text-gray-200';
   };
 
   const navigationItems = [
-    { 
-      path: '/boards', 
-      label: 'Boards', 
-      icon: LayoutDashboard, 
-      testId: 'nav-boards' 
-    },
-    { 
-      path: '/me', 
-      label: 'Personal Cabinet', 
-      icon: User, 
-      testId: 'nav-me' 
-    }
+    { path: '/boards', label: 'Boards', icon: LayoutDashboard, testId: 'nav-boards' },
+    { path: '/me', label: 'Personal Cabinet', icon: User, testId: 'nav-me' },
   ];
 
-  // Add expenses dashboard for main_admin and admin users
-  if (user.roles.includes('main_admin') || user.roles.includes('admin')) {
+  if (roles.includes('admin')) {
     navigationItems.push({
       path: '/dashboard/expenses',
       label: 'Expenses Dashboard',
@@ -69,12 +92,18 @@ const Navigation = ({ user, onLogout }) => {
     });
   }
 
+  const initials = useMemo(() => {
+    const src = (user?.full_name || user?.email || '').trim();
+    if (!src) return 'U';
+    return src.split(/\s+/).map((n) => n[0]?.toUpperCase()).filter(Boolean).slice(0, 2).join('');
+  }, [user]);
+
   return (
     <div className="w-52 bg-white/90 dark:bg-gray-700/95 backdrop-blur-md border-r border-gray-200 dark:border-gray-600 flex flex-col shadow-lg transition-colors duration-300">
       {/* Logo and Brand */}
       <div className="p-4 border-b border-gray-100 dark:border-gray-600">
         <div className="flex items-center space-x-2">
-          <div className={`w-8 h-8 bg-gradient-to-br ${getRoleColor(user.roles)} rounded-lg flex items-center justify-center shadow-lg`}>
+          <div className={`w-8 h-8 bg-gradient-to-br ${getRoleColor(roles)} rounded-lg flex items-center justify-center shadow-lg`}>
             <Kanban className="w-4 h-4 text-white" />
           </div>
           <div>
@@ -87,30 +116,34 @@ const Navigation = ({ user, onLogout }) => {
       {/* User Profile */}
       <div className="p-3 border-b border-gray-100 dark:border-gray-600">
         <div className="flex items-center space-x-2 mb-2">
-          <div className={`w-9 h-9 bg-gradient-to-br ${getRoleColor(user.roles)} rounded-full flex items-center justify-center text-white font-bold shadow-lg text-sm`}>
-            {user.full_name.split(' ').map(n => n[0]).join('').toUpperCase()}
+          <div className={`w-9 h-9 bg-gradient-to-br ${getRoleColor(roles)} rounded-full flex items-center justify-center text-white font-bold shadow-lg text-sm`}>
+            {initials}
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-medium text-gray-900 dark:text-gray-100 truncate text-sm" data-testid="user-full-name">
-              {user.full_name}
+              {user?.full_name || user?.email}
             </p>
             <p className="text-xs text-gray-500 dark:text-gray-300 truncate" data-testid="user-email">
-              {user.email}
+              {user?.email}
             </p>
           </div>
         </div>
         
         {/* Role Badges */}
         <div className="flex flex-wrap gap-1">
-          {user.roles.map((role) => (
-            <span
-              key={role}
-              className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${getRoleBadgeColor(role)}`}
-              data-testid={`user-role-${role}`}
-            >
-              {role}
-            </span>
-          ))}
+          {roles.length
+            ? roles.map((r) => (
+                <span
+                  key={r}
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${getRoleBadgeColor(r)}`}
+                  data-testid={`user-role-${r}`}
+                >
+                  {roleTitle(r)}
+                </span>
+              ))
+            : (
+              <span className="text-xs text-gray-400">no roles</span>
+            )}
         </div>
       </div>
 
@@ -138,8 +171,7 @@ const Navigation = ({ user, onLogout }) => {
 
       {/* Settings and Logout */}
       <div className="border-t border-gray-100 dark:border-gray-600 p-3 space-y-1">
-        {/* Only show Settings for admin users */}
-        {user.roles.includes('admin') && (
+        {roles.includes('admin') && (
           <Button
             variant="ghost"
             onClick={() => setShowAdminSettings(true)}
@@ -164,7 +196,7 @@ const Navigation = ({ user, onLogout }) => {
 
       {/* Admin Settings Dialog */}
       <AdminSettings 
-        open={showAdminSettings} 
+        open={showAdminSettings}
         onClose={() => setShowAdminSettings(false)}
         user={user}
       />

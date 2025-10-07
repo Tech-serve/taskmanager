@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// src/App.js
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from './components/ui/sonner';
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -15,40 +16,73 @@ import ExpensesDashboard from './components/ExpensesDashboard';
 // API
 import { authAPI } from './lib/api';
 
+// ===== Роли: канонизация и объединение источников =====
+const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const ROLE_ALIASES = {
+  admin: 'admin',
+  buyer: 'buyer',
+  designer: 'designer',
+  tech: 'tech',
+  team_lead: 'team_lead',
+  'team-lead': 'team_lead',
+  teamlead: 'team_lead',
+  head: 'team_lead',
+  head_lead: 'team_lead',
+  headelite: 'team_lead',
+  'head-elite': 'team_lead',
+  tl: 'team_lead',
+};
+const canonRole = (r) => ROLE_ALIASES[norm(r)] ?? norm(r);
+const canonRoles = (arr) => Array.from(new Set((Array.isArray(arr) ? arr : []).map(canonRole)));
+
+function unifyUser(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const real = canonRoles(raw.roles || []);
+  const extra = canonRoles(raw.effective_roles || []);
+  const effective = Array.from(new Set([...real, ...extra]));
+  return {
+    ...raw,
+    roles: real,
+    effective_roles: effective,
+    is_admin: effective.includes('admin'),
+    is_team_lead: effective.includes('team_lead'),
+  };
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Вынесли в useCallback, чтобы не нужен был eslint-disable
+  const checkAuth = useCallback(async () => {
+    try {
+      const response = await authAPI.me();
+      setUser(unifyUser(response.data));
+    } catch (error) {
+      console.error('Auth check failed:', error);
+      try { localStorage.removeItem('token'); } catch {}
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    // Check if user is already logged in
-    const token = localStorage.getItem('token');
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     if (token) {
       checkAuth();
     } else {
       setLoading(false);
     }
-  }, []);
-
-  const checkAuth = async () => {
-    try {
-      const response = await authAPI.me();
-      setUser(response.data);
-    } catch (error) {
-      console.error('Auth check failed:', error);
-      localStorage.removeItem('token');
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [checkAuth]);
 
   const login = (token, userData) => {
-    localStorage.setItem('token', token);
-    setUser(userData);
+    try { localStorage.setItem('token', token); } catch {}
+    setUser(unifyUser(userData));
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
+    try { localStorage.removeItem('token'); } catch {}
     setUser(null);
   };
 
