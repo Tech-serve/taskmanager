@@ -251,6 +251,60 @@ router.get('/:boardId/columns', async (req: AuthRequest, res: Response): Promise
   }
 });
 
+/** POST /api/boards/:boardId/columns — создать колонку (админ) */
+router.post('/:boardId/columns', requireAdmin, validate(createColumnSchema), async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { boardId } = req.params;
+    const { key, name, order } = req.body || {};
+
+    // 1) есть ли борда?
+    const board = await Board.findOne({ id: boardId });
+    if (!board) {
+      res.status(404).json({ error: 'Board not found' });
+      return;
+    }
+
+    // 2) нормализация входа
+    const colKey = String(key || '').trim().toUpperCase();
+    const colName = String(name || '').trim();
+    if (!colKey || !colName) {
+      res.status(400).json({ error: 'key and name are required' });
+      return;
+    }
+
+    // 3) идемпотентность: если колонка с таким key уже есть на борде — вернуть её
+    const existing = await Column.findOne({ boardId, key: colKey });
+    if (existing) {
+      res.status(200).json(existing.toJSON());
+      return;
+    }
+
+    // 4) рассчитать order, если не пришёл
+    let finalOrder: number;
+    if (typeof order === 'number' && Number.isFinite(order)) {
+      finalOrder = order;
+    } else {
+      const last = await Column.find({ boardId }).sort({ order: -1 }).limit(1).lean();
+      finalOrder = last.length ? (Number(last[0].order) || 0) + 1 : 1;
+    }
+
+    // 5) создать колонку
+    const column = new Column({
+      id: uuidv4(),
+      boardId,
+      key: colKey,
+      name: colName,
+      order: finalOrder,
+    });
+
+    await column.save();
+    res.status(201).json(column.toJSON());
+  } catch (e) {
+    console.error('Create column error:', e);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 /** GET /api/boards/:boardKey/column-stats */
 router.get('/:boardKey/column-stats', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
