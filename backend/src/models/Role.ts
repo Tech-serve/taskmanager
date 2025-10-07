@@ -3,51 +3,24 @@ import { v4 as uuidv4 } from 'uuid';
 
 export interface IRoleDoc {
   _id: mongoose.Types.ObjectId;
-  id: string;                 // UUID
-  key: string;                // УНИКАЛЬНЫЙ КЛЮЧ, UPPERCASE
-  name: string;               // Человекочитаемое имя
+  id: string;
+  key: string;          // UPPERCASE
+  name: string;
   description?: string | null;
-  isActive: boolean;          // Вкл/Выкл
-  builtIn: boolean;           // Системная роль (нелучше не удалять)
+  isActive: boolean;
+  builtIn: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
 const roleSchema = new Schema<IRoleDoc>(
   {
-    id: {
-      type: String,
-      default: () => uuidv4(),
-      unique: true,
-      required: true,
-    },
-    key: {
-      type: String,
-      required: true,
-      unique: true,
-      uppercase: true,
-      trim: true,
-    },
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    description: {
-      type: String,
-      default: null,
-      trim: true,
-    },
-    isActive: {
-      type: Boolean,
-      default: true,
-      index: true,
-    },
-    builtIn: {
-      type: Boolean,
-      default: false,
-      index: true,
-    },
+    id: { type: String, default: () => uuidv4(), unique: true, required: true },
+    key: { type: String, required: true, unique: true, uppercase: true, trim: true },
+    name: { type: String, required: true, trim: true },
+    description: { type: String, default: null, trim: true },
+    isActive: { type: Boolean, default: true, index: true },
+    builtIn: { type: Boolean, default: false, index: true },
   },
   {
     timestamps: true,
@@ -61,7 +34,6 @@ const roleSchema = new Schema<IRoleDoc>(
   }
 );
 
-// Индексы
 roleSchema.index({ id: 1 }, { unique: true });
 roleSchema.index({ key: 1 }, { unique: true });
 

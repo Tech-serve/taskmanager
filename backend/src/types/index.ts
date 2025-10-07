@@ -6,7 +6,8 @@ export enum Role {
   ADMIN = 'admin',
   BUYER = 'buyer',
   DESIGNER = 'designer',
-  TECH = 'tech'
+  TECH = 'tech',
+  TEAM_LEAD = 'team_lead',
 }
 
 export enum Department {
@@ -44,7 +45,8 @@ export interface IUser extends Document {
   email: string;
   passwordHash: string;
   fullName: string;
-  roles: Role[];
+  /** Храним строки (snake_case), чтобы поддерживать “живые” роли */
+  roles: string[];
   department?: Department;
   groups: string[];
   status: UserStatus;
@@ -71,7 +73,8 @@ export interface IBoard extends Document {
     commentsEnabled: boolean;
     timeTrackingEnabled: boolean;
   };
-  allowedRoles: Role[];
+  /** Список строковых ключей ролей (snake_case) */
+  allowedRoles: string[];
   allowedGroupIds: string[];
   members: string[];
   owners: string[];
@@ -112,9 +115,9 @@ export interface ITask extends Document {
   assigneeId?: string;
   department?: Department;
   creatorId: string;
-  amount?: number; // For expense tasks
-  category?: string; // Expense category
-  receiptUrl?: string; // Receipt/check upload
+  amount?: number;
+  category?: string;
+  receiptUrl?: string;
   routedFrom?: {
     boardKey: string;
     userId: string;
@@ -135,13 +138,13 @@ export interface CreateUserDTO {
   email: string;
   password?: string;
   fullName: string;
-  roles: Role[];
+  roles: string[];
   status?: UserStatus;
 }
 
 export interface UpdateUserDTO {
   fullName?: string;
-  roles?: Role[];
+  roles?: string[];
   status?: UserStatus;
   email?: string;
 }
@@ -151,7 +154,7 @@ export interface CreateBoardDTO {
   key: string;
   type?: BoardType;
   template?: Template;
-  allowedRoles?: Role[];
+  allowedRoles?: string[];
   allowedGroupIds?: string[];
   members?: string[];
   owners?: string[];
@@ -163,7 +166,7 @@ export interface UpdateBoardDTO {
   template?: Template;
   isArchived?: boolean;
   settings?: Partial<IBoard['settings']>;
-  allowedRoles?: Role[];
+  allowedRoles?: string[];
   allowedGroupIds?: string[];
   members?: string[];
   owners?: string[];
@@ -190,9 +193,9 @@ export interface CreateTaskDTO {
   tags?: string[];
   dueDate?: Date;
   assigneeId?: string;
-  amount?: number; // For expense tasks
-  category?: string; // Expense category
-  receiptUrl?: string; // Receipt/check upload
+  amount?: number;
+  category?: string;
+  receiptUrl?: string;
 }
 
 export interface UpdateTaskDTO {
@@ -203,7 +206,7 @@ export interface UpdateTaskDTO {
   tags?: string[];
   dueDate?: Date;
   assigneeId?: string;
-  amount?: number; // For expense tasks
-  category?: string; // Expense category
-  receiptUrl?: string; // Receipt/check upload
+  amount?: number;
+  category?: string;
+  receiptUrl?: string;
 }

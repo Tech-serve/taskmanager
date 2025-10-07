@@ -1,5 +1,6 @@
-// src/routes/boards.ts
+// backend/src/routes/boards.ts
 import { Router, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { Board } from '../models/Board';
 import { Column } from '../models/Column';
 import { Task } from '../models/Task';
@@ -13,17 +14,11 @@ const router = Router();
 // Допустимые шаблоны в БД (enum)
 const ALLOWED_TEMPLATES = new Set(['kanban-basic', 'kanban-tj-tech', 'empty']);
 
-/** ==================== НОРМАЛИЗАЦИЯ РОЛЕЙ (добавлено) ==================== */
-const canon = (s: unknown) => String(s || '').trim().toLowerCase();
-const variants = (s: unknown) => {
-  const base = canon(s);
-  const withUnderscore = base.replace(/[\s-]+/g, '_');
-  const withSpace = base.replace(/[_-]+/g, ' ');
-  return Array.from(new Set([base, withUnderscore, withSpace]));
-};
-const expandRoles = (arr: unknown[]) =>
-  Array.from(new Set((Array.isArray(arr) ? arr : []).flatMap(variants)));
-/** ======================================================================= */
+/** ==================== НОРМАЛИЗАЦИЯ РОЛЕЙ ==================== */
+const canon = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const canonList = (arr: unknown): string[] =>
+  Array.from(new Set((Array.isArray(arr) ? arr : []).map(canon).filter(Boolean)));
+/** ============================================================ */
 
 /** Общая проверка доступа к конкретной доске */
 const checkBoardAccess = async (user: any, boardKey: string) => {
@@ -31,20 +26,20 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
   const board = await Board.findOne({ key });
   if (!board) return null;
 
+  const userRoles = canonList(user.roles || []);
+  const userRoleSet = new Set(userRoles);
+
   // Админ видит всё
-  if (user.roles.includes(Role.ADMIN)) return board;
+  if (userRoleSet.has(Role.ADMIN)) return board;
 
   // Buyer — исторически имеет доступ к базовым
-  if (user.roles.includes(Role.BUYER) && ['BUY', 'TECH', 'DES'].includes(key)) {
+  if (userRoleSet.has(Role.BUYER) && ['BUY', 'TECH', 'DES'].includes(key)) {
     return board;
   }
 
-  // Доступ по ролям доски (учёт разных вариантов написания ключей роли)
-  const userRoleSet = new Set(expandRoles(user.roles || []));
-  const boardRoleSet = new Set(
-    expandRoles((board as any).allowedRoles || (board as any).allowed_roles || [])
-  );
-  for (const r of boardRoleSet) {
+  // Доступ по ролям доски
+  const boardRoles = canonList((board as any).allowedRoles || (board as any).allowed_roles || []);
+  for (const r of boardRoles) {
     if (userRoleSet.has(r)) return board;
   }
 
@@ -63,20 +58,18 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
 router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
+    const userRoles = canonList(user.roles || []);
     let query: any = {};
 
-    if (!user.roles.includes(Role.ADMIN)) {
-      const roleAliases = expandRoles(user.roles || []);
+    if (!userRoles.includes(Role.ADMIN)) {
       const or: any[] = [
-        // поддерживаем и camelCase, и legacy snake_case (добавлено)
-        { allowedRoles: { $in: roleAliases } },
-        { allowed_roles: { $in: roleAliases } },
+        { allowedRoles: { $in: userRoles } },
+        { allowed_roles: { $in: userRoles } }, // legacy
         { members: user.id },
         { owners: user.id },
       ];
 
-      // Сохраняем твой «whitelist» для покупателей
-      if (user.roles.includes(Role.BUYER)) {
+      if (userRoles.includes(Role.BUYER)) {
         or.push({ key: { $in: ['BUY', 'TECH', 'DES'] } });
       }
 
@@ -91,7 +84,7 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
   }
 });
 
-/** GET /api/boards/by-key/:key — получить доску по ключу (строгий доступ) */
+/** GET /api/boards/by-key/:key */
 router.get('/by-key/:key', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
@@ -109,28 +102,27 @@ router.get('/by-key/:key', async (req: AuthRequest, res: Response): Promise<void
   }
 });
 
-/** POST /api/boards — создать доску (только админ) */
+// POST /api/boards — создать доску (идемпотентно, без проблем с типами)
 router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const body = req.body || {};
+    const body = { ...(req.body || {}) };
 
-    // ключ доски всегда UPPERCASE
-    body.key = String(body.key || '').toUpperCase();
+    // Ключ → UPPERCASE
+    body.key = String(body.key || '').trim().toUpperCase();
 
-    // ⚠️ Нормализуем allowedRoles к lowercase (enum Role у тебя в нижнем регистре)
-    if (Array.isArray(body.allowedRoles)) {
-      body.allowedRoles = body.allowedRoles
-        .filter((r: unknown) => typeof r === 'string')
-        .map((r: string) => r.trim().toLowerCase());
+    // Нормализация allowedRoles
+    if (body.allowedRoles !== undefined) {
+      body.allowedRoles = canonList(body.allowedRoles);
+    } else {
+      body.allowedRoles = [];
     }
 
-    // Чистим составные поля (если фронт шлёт null/undefined)
+    // Чистим составные поля
     if (!Array.isArray(body.members)) body.members = [];
     if (!Array.isArray(body.owners)) body.owners = [];
     if (!Array.isArray(body.allowedGroupIds)) body.allowedGroupIds = [];
 
-    // ✅ НОРМАЛИЗАЦИЯ TEMPLATE (UI → enum БД)
-    // Если прилетело 'expenses-default' или любое невалидное — ставим 'kanban-basic'
+    // Шаблон
     const incomingTemplate = String(body.template || '').trim();
     if (String(body.type || '') === 'expenses') {
       body.template = 'kanban-basic';
@@ -138,28 +130,50 @@ router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequ
       body.template = ALLOWED_TEMPLATES.has(incomingTemplate) ? incomingTemplate : 'kanban-basic';
     }
 
-    // Проверка уникальности ключа
-    const existing = await Board.findOne({ key: body.key });
-    if (existing) {
-      res.status(400).json({ error: 'Board key already exists' });
-      return;
+    // Атомарный апсерт: если ключ свободен — создаст; если уже есть — просто ничего не изменит
+    const now = new Date();
+    const upRes = await Board.updateOne(
+      { key: body.key },
+      {
+        $setOnInsert: {
+          id: uuidv4(),
+          ...body,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      { upsert: true }
+    );
+
+    // Если upsert сработал — будет upsertedId; если undefined — запись уже существовала
+    const created = Boolean((upRes as any).upsertedId || (upRes as any).upsertedCount);
+
+    // Берём актуальный документ и отдаём клиенту
+    const doc = await Board.findOne({ key: body.key });
+    if (!doc) {
+      return void res.status(500).json({ error: 'Failed to create or read board' });
     }
 
-    const board = new Board(body);
-    await board.save();
-
-    res.status(201).json(board);
+    res.status(created ? 201 : 200).json(doc);
   } catch (e: any) {
+    // На случай редкого дубликата индекса — возвращаем существующую как 200 (идемпотентность)
+    if (e?.code === 11000 && e?.keyPattern?.key) {
+      try {
+        const k = String(req.body?.key || '').trim().toUpperCase();
+        const existing = await Board.findOne({ key: k });
+        if (existing) return void res.status(200).json(existing);
+      } catch {}
+    }
     console.error('Create board error:', e);
     res.status(400).json({ error: e?.message || 'Bad Request' });
   }
 });
 
-/** PATCH /api/boards/:id — обновить доску (только админ) */
+/** PATCH /api/boards/:id — обновить доску (админ) */
 router.patch('/:id', requireAdmin, validate(updateBoardSchema), async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const update = req.body || {};
+    const update = { ...(req.body || {}) };
 
     const board = await Board.findOne({ id });
     if (!board) {
@@ -167,10 +181,8 @@ router.patch('/:id', requireAdmin, validate(updateBoardSchema), async (req: Auth
       return;
     }
 
-    // ✅ НОРМАЛИЗАЦИЯ TEMPLATE при апдейте
     if (typeof update.template === 'string') {
       const incomingTemplate = String(update.template).trim();
-
       const effectiveType = typeof update.type === 'string' ? update.type : board.type;
       if (String(effectiveType) === 'expenses') {
         update.template = 'kanban-basic';
@@ -179,11 +191,9 @@ router.patch('/:id', requireAdmin, validate(updateBoardSchema), async (req: Auth
       }
     }
 
-    // ⚠️ Нормализуем allowedRoles к lowercase
-    if (Array.isArray(update.allowedRoles)) {
-      update.allowedRoles = update.allowedRoles
-        .filter((r: unknown) => typeof r === 'string')
-        .map((r: string) => r.trim().toLowerCase());
+    // Нормализация allowedRoles
+    if (update.allowedRoles !== undefined) {
+      update.allowedRoles = canonList(update.allowedRoles);
     }
 
     Object.assign(board, update);
@@ -197,7 +207,7 @@ router.patch('/:id', requireAdmin, validate(updateBoardSchema), async (req: Auth
   }
 });
 
-/** DELETE /api/boards/:id — удалить доску (только админ) */
+/** DELETE /api/boards/:id */
 router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -218,7 +228,7 @@ router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response): Pro
   }
 });
 
-/** GET /api/boards/:boardId/columns — колонки доски */
+/** GET /api/boards/:boardId/columns */
 router.get('/:boardId/columns', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { boardId } = req.params;
@@ -241,26 +251,7 @@ router.get('/:boardId/columns', async (req: AuthRequest, res: Response): Promise
   }
 });
 
-/** POST /api/boards/:boardId/columns — создать колонку (админ) */
-router.post('/:boardId/columns', requireAdmin, validate(createColumnSchema), async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const { boardId } = req.params;
-    const board = await Board.findOne({ id: boardId });
-    if (!board) {
-      res.status(404).json({ error: 'Board not found' });
-      return;
-    }
-
-    const column = new Column({ ...req.body, boardId });
-    await column.save();
-    res.status(201).json(column);
-  } catch (e) {
-    console.error('Create column error:', e);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-/** GET /api/boards/:boardKey/column-stats — агрегация по колонкам */
+/** GET /api/boards/:boardKey/column-stats */
 router.get('/:boardKey/column-stats', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
@@ -297,10 +288,11 @@ router.get('/:boardKey/column-stats', async (req: AuthRequest, res: Response): P
   }
 });
 
-/** GET /api/boards/:boardKey/tasks — задачи доски с ролевой фильтрацией */
+/** GET /api/boards/:boardKey/tasks — задачи борда */
 router.get('/:boardKey/tasks', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
+    const userRoles = canonList(user.roles || []);
     const key = String(req.params.boardKey || '').toUpperCase();
     const { columns, assignees, q } = req.query;
 
@@ -312,27 +304,22 @@ router.get('/:boardKey/tasks', async (req: AuthRequest, res: Response): Promise<
 
     const query: any = { boardKey: key };
 
-    // Ролевая фильтрация задач
-    if (!user.roles.includes(Role.ADMIN)) {
-      if (user.roles.includes(Role.BUYER)) {
+    if (!userRoles.includes('admin')) {
+      if (userRoles.includes('team_lead')) {
+        // тимлид видит всё на доступных бордах
+      } else if (userRoles.includes('buyer')) {
         query.creatorId = user.id;
-      } else if (user.roles.includes(Role.TECH) && key === 'TECH') {
+      } else if (userRoles.includes('tech') && key === 'TECH') {
         // видит всё на TECH
-      } else if (user.roles.includes(Role.DESIGNER) && key === 'DES') {
+      } else if (userRoles.includes('designer') && key === 'DES') {
         // видит всё на DES
-      } else if (user.roles.includes(Role.TECH) || user.roles.includes(Role.DESIGNER)) {
-        query.creatorId = user.id;
       } else {
         query.creatorId = user.id;
       }
     }
 
-    if (columns) {
-      query.columnId = { $in: String(columns).split(',') };
-    }
-    if (assignees) {
-      query.assigneeId = { $in: String(assignees).split(',') };
-    }
+    if (columns) query.columnId = { $in: String(columns).split(',') };
+    if (assignees) query.assigneeId = { $in: String(assignees).split(',') };
     if (q) {
       query.$or = [
         { title: { $regex: String(q), $options: 'i' } },
@@ -348,27 +335,21 @@ router.get('/:boardKey/tasks', async (req: AuthRequest, res: Response): Promise<
   }
 });
 
-/** ВАЖНО: спец-маршрут ДОЛЖЕН идти до catch-all */
+/** ВАЖНО: спец-маршрут до catch-all */
 router.get('/:boardKey/assignable-users', async (req: AuthRequest, res: Response) => {
   try {
     const key = String(req.params.boardKey || '').toUpperCase();
     const board = await Board.findOne({ key }).lean();
     if (!board) return res.status(404).json({ error: 'Board not found' });
 
-    const roleAliases = expandRoles((board as any).allowedRoles || (board as any).allowed_roles || []);
+    const roleAliases = canonList((board as any).allowedRoles || (board as any).allowed_roles || []);
     const or: any[] = [];
-    if (roleAliases.length) {
-      or.push({ roles: { $in: roleAliases } });
-    }
+    if (roleAliases.length) or.push({ roles: { $in: roleAliases } });
     if (Array.isArray((board as any).allowedGroupIds) && (board as any).allowedGroupIds.length) {
       or.push({ groups: { $in: (board as any).allowedGroupIds } });
     }
-    if (Array.isArray(board.members) && board.members.length) {
-      or.push({ id: { $in: board.members } });
-    }
-    if (Array.isArray(board.owners) && board.owners.length) {
-      or.push({ id: { $in: board.owners } });
-    }
+    if (Array.isArray(board.members) && board.members.length) or.push({ id: { $in: board.members } });
+    if (Array.isArray(board.owners) && board.owners.length) or.push({ id: { $in: board.owners } });
 
     const query: any = { status: 'active' };
     if (or.length) query.$or = or;
@@ -385,7 +366,7 @@ router.get('/:boardKey/assignable-users', async (req: AuthRequest, res: Response
   }
 });
 
-/** GET /api/boards/:boardKey — получить доску по ключу (catch-all, ДЕРЖИ В КОНЦЕ) */
+/** GET /api/boards/:boardKey — catch-all */
 router.get('/:boardKey', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;

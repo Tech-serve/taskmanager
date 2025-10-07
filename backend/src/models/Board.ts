@@ -18,7 +18,7 @@ const boardSchema = new Schema<IBoard>(
       commentsEnabled: { type: Boolean, default: false },
       timeTrackingEnabled: { type: Boolean, default: false }
     },
-    allowedRoles: [{ type: String }],    // <— БЕЗ enum
+    allowedRoles: [{ type: String }],
     allowedGroupIds: [{ type: String }],
     members: [{ type: String }],
     owners: [{ type: String }],

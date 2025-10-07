@@ -1,114 +1,149 @@
 import { Router, Response } from 'express';
 import { User } from '../models/User';
-import { AuthRequest, Role, UserStatus } from '../types';
-import { requireAdmin, requireRoles } from '../middleware/auth';
+import { AuthRequest, UserStatus } from '../types';
+import { requireAdmin } from '../middleware/auth';
 import { AuthUtils } from '../utils/auth';
+import { RoleBinding } from '../models/RoleBinding';
 
 const router = Router();
 
-// @route   GET /api/users
-// @desc    Get all users (admin only)
-// @access  Private/Admin
-router.get('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
+/** ===== Helpers: нормализация, union и батч-мапа биндингов ===== */
+const norm = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const ROLE_ALIASES: Record<string, string> = {
+  admin: 'admin',
+  buyer: 'buyer',
+  designer: 'designer',
+  tech: 'tech',
+  team_lead: 'team_lead',
+  'team-lead': 'team_lead',
+  teamlead: 'team_lead',
+  head: 'team_lead',
+  head_lead: 'team_lead',
+  headelite: 'team_lead',
+  'head-elite': 'team_lead',
+  tl: 'team_lead',
+};
+const canonize = (arr: unknown[]) =>
+  Array.from(new Set((Array.isArray(arr) ? arr : []).map(x => ROLE_ALIASES[norm(x)] ?? norm(x)).filter(Boolean)));
+
+function unionRoles(real: string[] | undefined, added: string[] | undefined) {
+  return Array.from(new Set([...(canonize(real || [])), ...(canonize(added || []))]));
+}
+
+async function getBindingsMap(userIds: string[]) {
+  const rows = await RoleBinding.find({ userId: { $in: userIds }, isActive: true })
+    .select({ userId: 1, role: 1 }).lean();
+  const map = new Map<string, string[]>();
+  for (const r of rows) {
+    const uid = (r as any).userId as string;
+    const role = (r as any).role as string;
+    const arr = map.get(uid) || [];
+    arr.push(role);
+    map.set(uid, arr);
+  }
+  return map;
+}
+
+async function getEffective(userId: string, real: string[] | undefined) {
+  const rows = await RoleBinding.find({ userId, isActive: true }).select({ role: 1 }).lean();
+  const added = rows.map(r => (r as any).role);
+  return unionRoles(real, added);
+}
+/** ===================================================================== */
+
+// GET /api/users
+router.get('/', requireAdmin, async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
     const users = await User.find({})
       .select('-passwordHash')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // Transform to frontend expected format
-    const transformedUsers = users.map(user => ({
-      id: user.id,
-      email: user.email,
-      full_name: user.fullName,
-      roles: user.roles,
-      groups: user.groups,
-      status: user.status,
-      created_at: user.createdAt,
-      updated_at: user.updatedAt,
-      last_login: user.lastLogin
-    }));
+    const ids = users.map(u => u.id);
+    const bmap = await getBindingsMap(ids);
 
-    res.json(transformedUsers);
+    const transformed = users.map(u => {
+      const effective = unionRoles(u.roles as any, bmap.get(u.id));
+      return {
+        id: u.id,
+        email: u.email,
+        full_name: u.fullName,
+        roles: u.roles,
+        effective_roles: effective,
+        groups: u.groups,
+        status: u.status,
+        created_at: u.createdAt,
+        updated_at: u.updatedAt,
+        last_login: u.lastLogin
+      };
+    });
+
+    res.json(transformed);
   } catch (error) {
     console.error('Get users error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// @route   GET /api/users/:id
-// @desc    Get user by ID
-// @access  Private (self or admin)
+// GET /api/users/:id
 router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const currentUser = req.user!;
+    const currentEffective = await getEffective(currentUser.id, currentUser.roles as any);
 
-    // Check if user is accessing their own profile or is admin
-    if (currentUser.id !== id && !currentUser.roles.includes(Role.ADMIN)) {
+    const isAdmin = currentEffective.includes('admin');
+    if (currentUser.id !== id && !isAdmin) {
       res.status(403).json({ error: 'Access denied' });
       return;
     }
 
-    const user = await User.findOne({ id }).select('-passwordHash');
-    if (!user) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
+    const user = await User.findOne({ id }).select('-passwordHash').lean();
+    if (!user) { res.status(404).json({ error: 'User not found' }); return; }
 
-    // Transform to frontend expected format
-    const transformedUser = {
+    const effective = await getEffective(user.id, user.roles as any);
+
+    res.json({
       id: user.id,
       email: user.email,
       full_name: user.fullName,
       roles: user.roles,
+      effective_roles: effective,
       groups: user.groups,
       status: user.status,
       created_at: user.createdAt,
       updated_at: user.updatedAt,
       last_login: user.lastLogin
-    };
-
-    res.json(transformedUser);
+    });
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// @route   POST /api/users
-// @desc    Create new user (admin only)
-// @access  Private/Admin
+// POST /api/users
 router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { email, fullName, roles, sendInvitation, password } = req.body;
 
-    // Validation
     if (!email || !fullName || !roles || !Array.isArray(roles)) {
       res.status(400).json({ error: 'Email, fullName, and roles are required' });
       return;
     }
 
-    // Check if user already exists
     const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      res.status(400).json({ error: 'User with this email already exists' });
-      return;
-    }
+    if (existingUser) { res.status(400).json({ error: 'User with this email already exists' }); return; }
 
-    // Create user data
     const userData: any = {
       email: email.toLowerCase(),
       fullName,
-      roles,
+      roles: canonize(roles), // <-- нормализуем
       status: sendInvitation ? UserStatus.PENDING : UserStatus.ACTIVE
     };
 
-    // Handle password - either hash provided password or prepare for invitation
     if (password && !sendInvitation) {
-      // Direct password creation (admin setting password)
       userData.passwordHash = await AuthUtils.hashPassword(password);
     } else if (sendInvitation) {
-      // If sending invitation, generate invitation token
       userData.invitationToken = AuthUtils.generateInvitationToken();
       userData.invitationExpires = AuthUtils.generateInvitationExpiry();
     }
@@ -116,8 +151,8 @@ router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<
     const user = new User(userData);
     await user.save();
 
-    // TODO: Send email invitation if sendInvitation is true
-    // For now, we'll just return the invitation URL in response
+    const effective = await getEffective(user.id, user.roles as any);
+
     let invitationUrl = null;
     if (sendInvitation && user.invitationToken) {
       const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -130,6 +165,7 @@ router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<
         email: user.email,
         full_name: user.fullName,
         roles: user.roles,
+        effective_roles: effective,
         status: user.status,
         created_at: user.createdAt,
         updated_at: user.updatedAt
@@ -143,27 +179,20 @@ router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<
   }
 });
 
-// @route   PUT /api/users/:id
-// @desc    Update user (admin only)
-// @access  Private/Admin
+// PUT /api/users/:id
 router.put('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const { fullName, roles, status, email, password } = req.body;
 
     const user = await User.findOne({ id });
-    if (!user) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
+    if (!user) { res.status(404).json({ error: 'User not found' }); return; }
 
-    // Update fields if provided
     if (fullName !== undefined) user.fullName = fullName;
-    if (roles !== undefined) user.roles = roles;
+    if (roles !== undefined) user.roles = canonize(roles); // <-- нормализуем
     if (status !== undefined) user.status = status;
     if (email !== undefined) user.email = email.toLowerCase();
-    
-    // Update password if provided
+
     if (password !== undefined && password !== '') {
       user.passwordHash = await AuthUtils.hashPassword(password);
       console.log(`Password updated for user ${user.email}`);
@@ -171,11 +200,14 @@ router.put('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promis
 
     await user.save();
 
+    const effective = await getEffective(user.id, user.roles as any);
+
     res.json({
       id: user.id,
       email: user.email,
       full_name: user.fullName,
       roles: user.roles,
+      effective_roles: effective,
       status: user.status,
       created_at: user.createdAt,
       updated_at: user.updatedAt
@@ -186,25 +218,19 @@ router.put('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promis
   }
 });
 
-// @route   DELETE /api/users/:id
-// @desc    Delete user (admin only)
-// @access  Private/Admin
+// DELETE /api/users/:id
 router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const currentUser = req.user!;
 
-    // Prevent admin from deleting themselves
     if (currentUser.id === id) {
       res.status(400).json({ error: 'Cannot delete your own account' });
       return;
     }
 
     const user = await User.findOne({ id });
-    if (!user) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
+    if (!user) { res.status(404).json({ error: 'User not found' }); return; }
 
     await User.deleteOne({ id });
 
@@ -215,38 +241,28 @@ router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response): Pro
   }
 });
 
-// @route   POST /api/users/:id/resend-invitation
-// @desc    Resend invitation to user (admin only)
-// @access  Private/Admin
+// POST /api/users/:id/resend-invitation
 router.post('/:id/resend-invitation', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
 
     const user = await User.findOne({ id });
-    if (!user) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
+    if (!user) { res.status(404).json({ error: 'User not found' }); return; }
 
     if (user.status === UserStatus.ACTIVE) {
       res.status(400).json({ error: 'User is already active' });
       return;
     }
 
-    // Generate new invitation token
     user.invitationToken = AuthUtils.generateInvitationToken();
     user.invitationExpires = AuthUtils.generateInvitationExpiry();
     user.status = UserStatus.PENDING;
     await user.save();
 
-    // TODO: Send email invitation
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const invitationUrl = `${frontendUrl}/invitation/${user.invitationToken}`;
 
-    res.json({
-      message: 'Invitation resent successfully',
-      invitationUrl
-    });
+    res.json({ message: 'Invitation resent successfully', invitationUrl });
   } catch (error) {
     console.error('Resend invitation error:', error);
     res.status(500).json({ error: 'Internal server error' });
