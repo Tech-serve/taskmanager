@@ -343,44 +343,65 @@ router.get('/:boardKey/column-stats', async (req: AuthRequest, res: Response): P
 });
 
 /** GET /api/boards/:boardKey/tasks — задачи борда */
+/** GET /api/boards/:boardKey/tasks — задачи борда */
 router.get('/:boardKey/tasks', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
-    const userRoles = canonList(user.roles || []);
+    const userRoles = canonList(user.roles || []);          // ['admin', 'team_lead', ...]
     const key = String(req.params.boardKey || '').toUpperCase();
     const { columns, assignees, q } = req.query;
 
+    // доступ к борде
     const board = await checkBoardAccess(user, key);
     if (!board) {
       res.status(404).json({ error: 'Board not found or access denied' });
       return;
     }
 
-    const query: any = { boardKey: key };
+    // накапливаем условия через $and, чтобы корректно комбинировать фильтры
+    const and: any[] = [{ boardKey: key }];
 
-    if (!userRoles.includes('admin')) {
-      if (userRoles.includes('team_lead')) {
-        // тимлид видит всё на доступных бордах
-      } else if (userRoles.includes('buyer')) {
-        query.creatorId = user.id;
-      } else if (userRoles.includes('tech') && key === 'TECH') {
+    const isAdmin = userRoles.includes('admin');
+    const isTeamLead = userRoles.includes('team_lead');
+    const isBuyer = userRoles.includes('buyer');
+    const isTech = userRoles.includes('tech');
+    const isDesigner = userRoles.includes('designer');
+
+    if (!isAdmin) {
+      if (key === 'EXP') {
+        // 🔒 Expenses: только свои задачи (созданные или назначенные)
+        and.push({ $or: [{ creatorId: user.id }, { assigneeId: user.id }] });
+      } else if (isTeamLead) {
+        // Тимлид видит всё на прочих бордах (кроме EXP, см. выше)
+        // никаких доп. ограничений
+      } else if (isBuyer) {
+        and.push({ creatorId: user.id });
+      } else if (isTech && key === 'TECH') {
         // видит всё на TECH
-      } else if (userRoles.includes('designer') && key === 'DES') {
+      } else if (isDesigner && key === 'DES') {
         // видит всё на DES
       } else {
-        query.creatorId = user.id;
+        // по умолчанию — только свои
+        and.push({ creatorId: user.id });
       }
     }
 
-    if (columns) query.columnId = { $in: String(columns).split(',') };
-    if (assignees) query.assigneeId = { $in: String(assignees).split(',') };
+    if (columns) {
+      and.push({ columnId: { $in: String(columns).split(',') } });
+    }
+    if (assignees) {
+      and.push({ assigneeId: { $in: String(assignees).split(',') } });
+    }
     if (q) {
-      query.$or = [
-        { title: { $regex: String(q), $options: 'i' } },
-        { description: { $regex: String(q), $options: 'i' } },
-      ];
+      and.push({
+        $or: [
+          { title: { $regex: String(q), $options: 'i' } },
+          { description: { $regex: String(q), $options: 'i' } },
+        ],
+      });
     }
 
+    const query = and.length > 1 ? { $and: and } : and[0];
     const tasks = await Task.find(query).sort({ createdAt: -1 });
     res.json(tasks);
   } catch (e) {
