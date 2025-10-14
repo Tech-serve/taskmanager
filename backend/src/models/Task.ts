@@ -1,3 +1,4 @@
+// src/models/Task.ts
 import mongoose, { Schema } from 'mongoose';
 import { ITask, Priority, Department } from '../types';
 import { v4 as uuidv4 } from 'uuid';
@@ -5,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 const CommentSchema = new Schema(
   {
     id: { type: String, default: () => uuidv4() },
-    authorId: { type: String, required: true, index: true },
+    authorId: { type: String, required: true },             // ← убран index: true
     authorName: { type: String, required: true, trim: true },
     text: { type: String, required: true, trim: true, maxlength: 2000 },
     createdAt: { type: Date, default: Date.now },
@@ -18,20 +19,16 @@ const taskSchema = new Schema<ITask>(
     id: {
       type: String,
       default: () => uuidv4(),
-      unique: true,
-      required: true,
-      index: true,
+      required: true,                                       // ← убраны unique/index из поля
     },
     boardKey: {
       type: String,
       required: true,
-      uppercase: true,
-      index: true,
+      uppercase: true,                                       // нормализация ключа борда
     },
     columnId: {
       type: String,
       required: true,
-      index: true,
     },
     title: {
       type: String,
@@ -46,7 +43,6 @@ const taskSchema = new Schema<ITask>(
       type: String,
       enum: Object.values(Priority),
       default: Priority.MEDIUM,
-      index: true,
     },
     tags: [
       {
@@ -56,23 +52,20 @@ const taskSchema = new Schema<ITask>(
     ],
     dueDate: {
       type: Date,
-      index: true,
     },
     assigneeId: {
       type: String,
-      index: true,
     },
     creatorId: {
       type: String,
       required: true,
-      index: true,
     },
     department: {
       type: String,
       enum: Object.values(Department),
       required: false,
-      index: true,
     },
+
     // — поля для расходов —
     amount: {
       type: Number,
@@ -144,11 +137,12 @@ const taskSchema = new Schema<ITask>(
   }
 );
 
-// индексы
-taskSchema.index({ boardKey: 1, creatorId: 1 });
-taskSchema.index({ assigneeId: 1 });
-taskSchema.index({ createdAt: -1 });
-taskSchema.index({ dueDate: 1 });
-taskSchema.index({ boardKey: 1, department: 1 });
+/** Индексы — объявляем здесь, без index/unique в полях */
+taskSchema.index({ id: 1 }, { unique: true });                 // уникальный ID задачи
+taskSchema.index({ boardKey: 1, creatorId: 1 });                // выборки “мои задачи по борду”
+taskSchema.index({ assigneeId: 1 });                            // задачи по исполнителю
+taskSchema.index({ createdAt: -1 });                            // сортировка/лента
+taskSchema.index({ dueDate: 1 });                               // дедлайны
+taskSchema.index({ boardKey: 1, department: 1 });               // борд + департамент
 
 export const Task = mongoose.model<ITask>('Task', taskSchema);

@@ -26,6 +26,8 @@ const asIdArray = (arr: any[]): string[] =>
     .filter(Boolean)
     .map(String);
 
+const toUpper = (s: unknown) => String(s ?? '').trim().toUpperCase();
+
 /**
  * validate(schema)
  * — единая фабрика валидации, которая не только проверяет,
@@ -81,12 +83,20 @@ const rolesLike = Joi.array()
   .items(Joi.alternatives().try(Joi.string(), Joi.object().unknown(true)))
   .custom((arr) => (arr as any[]).map(v => (typeof v === 'string' ? v : String(idFrom(v) ?? ''))).filter(Boolean), 'coerce roles[]');
 
+/** Массив UPPERCASE департаментов */
+const departmentsLike = Joi.array()
+  .items(Joi.alternatives().try(Joi.string(), Joi.object().unknown(true)))
+  .custom((arr) =>
+    Array.from(new Set(((Array.isArray(arr) ? arr : []) as any[])
+      .map(v => typeof v === 'string' ? v : String(idFrom(v) ?? ''))
+      .map(toUpper)
+      .filter(Boolean))), 'coerce departments[]');
+
 export const createBoardSchema = Joi.object({
   name: Joi.string().min(2).max(100).required(),
   key: Joi.string().min(2).max(10).uppercase().required(),
 
-  // Чтоб не ловить 400 из-за несовпадения словарей — делаем optional string.
-  // (Если хочешь строгий список — вернём .valid(...) позже, когда UI стабилизируем)
+  // допускаем строки для гибкости
   type: Joi.string().optional(),
   template: Joi.string().optional(),
 
@@ -95,15 +105,18 @@ export const createBoardSchema = Joi.object({
   members: membersLike.optional(),
   owners: membersLike.optional(),
 
+  /** 🔎 Новое поле видимости */
+  visibleDepartments: departmentsLike.optional(),
+
   // UI иногда присылает — допускаем; лишнее всё равно срежется stripUnknown
   description: Joi.string().allow('').optional(),
   settings: Joi.object().unknown(true).optional(),
 })
-// мост совместимости со snake_case
 .rename('allowed_roles', 'allowedRoles', { ignoreUndefined: true, override: true })
 .rename('allowed_group_ids', 'allowedGroupIds', { ignoreUndefined: true, override: true })
 .rename('members_ids', 'members', { ignoreUndefined: true, override: true })
-.rename('owners_ids', 'owners', { ignoreUndefined: true, override: true });
+.rename('owners_ids', 'owners', { ignoreUndefined: true, override: true })
+.rename('visible_departments', 'visibleDepartments', { ignoreUndefined: true, override: true });
 
 export const updateBoardSchema = Joi.object({
   name: Joi.string().min(2).max(100).optional(),
@@ -122,12 +135,15 @@ export const updateBoardSchema = Joi.object({
   allowedGroupIds: membersLike.optional(),
   members: membersLike.optional(),
   owners: membersLike.optional(),
+  /** 🔎 Новое поле видимости */
+  visibleDepartments: departmentsLike.optional(),
   description: Joi.string().allow('').optional(),
 })
 .rename('allowed_roles', 'allowedRoles', { ignoreUndefined: true, override: true })
 .rename('allowed_group_ids', 'allowedGroupIds', { ignoreUndefined: true, override: true })
 .rename('members_ids', 'members', { ignoreUndefined: true, override: true })
-.rename('owners_ids', 'owners', { ignoreUndefined: true, override: true });
+.rename('owners_ids', 'owners', { ignoreUndefined: true, override: true })
+.rename('visible_departments', 'visibleDepartments', { ignoreUndefined: true, override: true });
 
 /* ======================
  *  COLUMNS
@@ -139,12 +155,12 @@ export const createColumnSchema = Joi.object({
   order: Joi.number().integer().min(1).required(),
 });
 
-/** ✅ Добавьте это */
 export const updateColumnSchema = Joi.object({
   key: Joi.string().min(2).max(50).uppercase().optional(),
   name: Joi.string().min(2).max(100).optional(),
   order: Joi.number().integer().min(1).optional(),
-}).or('key', 'name', 'order'); 
+}).or('key', 'name', 'order');
+
 /* ======================
  *  TASKS
  * ====================== */
@@ -204,7 +220,7 @@ export const updateTaskSchema = Joi.object({
 .rename('receipt_url', 'receiptUrl', { ignoreUndefined: true, override: true });
 
 /* ======================
- *  ADMIN (Departments / Groups)
+ *  ADMIN (Departments / Groups / Roles)
  * ====================== */
 
 export const createDepartmentSchema = Joi.object({

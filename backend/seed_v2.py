@@ -1,609 +1,590 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Seed script for new Department-based ACL system
-Creates departments, roles, groups, and migrates existing data
+Seed v2 for Department-based ACL system (FIXED to match current Mongoose schema)
+Создаёт департаменты, группы, юзеров (с указанными логинами/паролями), борды, колонки, задачи.
+— Без passlib, только pyca/bcrypt (пароль режем до 72 байт).
+— Перед заливкой сбрасываем индексы и создаём правильные (чтобы не ловить E11000 key:null).
+— Исправления: fullName, passwordHash, roles:[string], флаги активации, createdAt/updatedAt.
 """
+
 import asyncio
 import os
-from motor.motor_asyncio import AsyncIOMotorClient
-from passlib.hash import bcrypt
 from datetime import datetime, timezone
-from dotenv import load_dotenv
 from pathlib import Path
+from urllib.parse import urlparse  # оставляю как в твоём оригинале
+
+from dotenv import load_dotenv
+from motor.motor_asyncio import AsyncIOMotorClient
+import bcrypt as pybcrypt
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# ---------- Mongo ----------
+MONGO_URL = os.environ["MONGO_URL"]
+# Если DB_NAME не задан, возьмём 'simplified_jira'
+DB_NAME = os.getenv("DB_NAME") or "simplified_jira"
 
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+# ---------- helpers ----------
+def now_utc():
+    return datetime.now(timezone.utc)
+
+def hash_pw(p: str) -> str:
+    """bcrypt с безопасным тримом до 72 байт (ограничение алгоритма)."""
+    if not isinstance(p, str):
+        p = str(p)
+    data = p.encode("utf-8")[:72]
+    return pybcrypt.hashpw(data, pybcrypt.gensalt()).decode("utf-8")
+
+# ---------- housekeeping: clear + indexes ----------
 async def clear_collections():
-    """Clear existing data"""
     print("Clearing existing data...")
     await db.users.delete_many({})
+    await db.departments.delete_many({})
+    await db.groups.delete_many({})
     await db.boards.delete_many({})
     await db.columns.delete_many({})
     await db.tasks.delete_many({})
-    await db.departments.delete_many({})
-    await db.groups.delete_many({})
     print("✓ Cleared all collections")
 
+async def reset_indexes():
+    """Сносим старые индексы и создаём корректные уникальные по нужным полям."""
+    print("Resetting indexes...")
+
+    # Departments
+    try: await db.departments.drop_indexes()
+    except Exception: pass
+    await db.departments.create_index("id", unique=True)
+    await db.departments.create_index("key", unique=True)
+
+    # Groups
+    try: await db.groups.drop_indexes()
+    except Exception: pass
+    await db.groups.create_index("id", unique=True)
+    await db.groups.create_index("key", unique=True)
+
+    # Boards
+    try: await db.boards.drop_indexes()
+    except Exception: pass
+    await db.boards.create_index("id", unique=True)
+    await db.boards.create_index("key", unique=True)
+
+    # Columns
+    try: await db.columns.drop_indexes()
+    except Exception: pass
+    await db.columns.create_index("id", unique=True)
+    await db.columns.create_index([("board_id", 1), ("key", 1)], unique=True)
+
+    # Users
+    try: await db.users.drop_indexes()
+    except Exception: pass
+    await db.users.create_index("id", unique=True)
+    await db.users.create_index("email", unique=True)
+
+    # Tasks
+    try: await db.tasks.drop_indexes()
+    except Exception: pass
+    await db.tasks.create_index("id", unique=True)
+    await db.tasks.create_index("board_key")
+    await db.tasks.create_index("department_id")
+
+    print("✓ Indexes reset")
+
+# ---------- data creators ----------
 async def create_departments():
-    """Create seed departments"""
     print("Creating departments...")
-    
+    ts = now_utc()
     departments = [
         {
             "id": "dept-gambling",
+            "key": "GAMBLING",
             "name": "Gambling",
-            "type": "gambling",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "type": "GAMBLING",
+            "createdAt": ts,
+            "updatedAt": ts,
         },
         {
-            "id": "dept-sweeps",
-            "name": "Sweeps", 
-            "type": "sweeps",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "dept-office",
-            "name": "Office",
-            "type": "office", 
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "dept-tech",
-            "name": "Tech",
-            "type": "tech",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "id": "dept-swip",
+            "key": "SWIP",
+            "name": "SWIP",
+            "type": "SWIP",
+            "createdAt": ts,
+            "updatedAt": ts,
         },
         {
             "id": "dept-admins",
-            "name": "Admins", 
-            "type": "admins",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
+            "key": "ADMINS",
+            "name": "Admins",
+            "type": "ADMINS",
+            "createdAt": ts,
+            "updatedAt": ts,
+        },
     ]
-    
     await db.departments.insert_many(departments)
     print(f"✓ Created {len(departments)} departments")
 
 async def create_groups():
-    """Create seed groups/teams"""
     print("Creating groups...")
-    
+    ts = now_utc()
     groups = [
         {
-            "id": "group-gambling-team1",
-            "name": "Gambling Team Alpha",
+            "id": "group-gambling-core",
+            "key": "GAM_CORE",
+            "name": "Gambling Core",
             "department_id": "dept-gambling",
-            "lead_user_id": "lead-gambling-001",
-            "member_ids": ["buyer-gambling-001", "buyer-gambling-002"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "lead_user_id": "user-tl1-gambling",
+            "member_ids": [
+                "user-tech1-gambling",
+                "user-tech2-gambling",
+                "user-buyertech1-gambling",
+                "user-buyertech2-gambling",
+                "user-designer1-gambling",
+                "user-designer2-gambling",
+            ],
+            "createdAt": ts,
+            "updatedAt": ts,
         },
         {
-            "id": "group-sweeps-team1", 
-            "name": "Sweeps Team Bravo",
-            "department_id": "dept-sweeps",
-            "lead_user_id": "lead-sweeps-001",
-            "member_ids": ["buyer-sweeps-001"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
+            "id": "group-swip-core",
+            "key": "SWIP_CORE",
+            "name": "SWIP Core",
+            "department_id": "dept-swip",
+            "lead_user_id": "user-tl1-swip",
+            "member_ids": [
+                "user-buyer1-swip",
+                "user-buyer2-swip",
+                "user-tech1-swip",
+                "user-tech2-swip",
+                "user-designer1-swip",
+                "user-designer2-swip",
+            ],
+            "createdAt": ts,
+            "updatedAt": ts,
+        },
     ]
-    
     await db.groups.insert_many(groups)
     print(f"✓ Created {len(groups)} groups")
 
 async def create_users():
-    """Create seed users with new role system"""
     print("Creating users...")
-    
+    ts = now_utc()
     users = [
-        # C-Level Users
+        # Главный админ
         {
-            "id": "ceo-001",
-            "email": "ceo@company.com",
-            "password_hash": bcrypt.hash("ceo123"),
-            "full_name": "CEO User",
-            "roles": [{"role": "ceo", "department_id": None}],
+            "id": "admin-001",
+            "email": "admin@company.com",
+            "passwordHash": hash_pw("admin123"),
+            "fullName": "Super Admin",
+            "roles": ["admin"],  # <— массив строк
             "groups": [],
-            "primary_department_id": None,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "primary_department_id": "dept-admins",
+            "isActivated": True,
+            "isActive": True,
+            "active": True,
+            "status": "active",
+            "emailVerified": True,
+            "isDisabled": False,
+            "createdAt": ts,
+            "updatedAt": ts,
         },
+
+        # ====== GAMBLING ======
         {
-            "id": "coo-001", 
-            "email": "coo@company.com",
-            "password_hash": bcrypt.hash("coo123"),
-            "full_name": "COO User",
-            "roles": [{"role": "coo", "department_id": None}],
-            "groups": [],
-            "primary_department_id": None,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "cto-001",
-            "email": "cto@company.com", 
-            "password_hash": bcrypt.hash("cto123"),
-            "full_name": "CTO User",
-            "roles": [{"role": "cto", "department_id": None}],
-            "groups": [],
-            "primary_department_id": None,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        
-        # Department Heads
-        {
-            "id": "head-gambling-001",
-            "email": "head.gambling@company.com",
-            "password_hash": bcrypt.hash("head123"),
-            "full_name": "Gambling Department Head",
-            "roles": [{"role": "head", "department_id": "dept-gambling"}],
-            "groups": [],
+            "id": "user-tech1-gambling",
+            "email": "tech1@gambling.local",
+            "passwordHash": hash_pw("f@DOr&hVMLfk"),
+            "fullName": "Tech1 Gambling",
+            "roles": ["tech"],
+            "groups": ["group-gambling-core"],
             "primary_department_id": "dept-gambling",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
         },
         {
-            "id": "head-sweeps-001",
-            "email": "head.sweeps@company.com",
-            "password_hash": bcrypt.hash("head123"),
-            "full_name": "Sweeps Department Head", 
-            "roles": [{"role": "head", "department_id": "dept-sweeps"}],
-            "groups": [],
-            "primary_department_id": "dept-sweeps",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        
-        # Team Leads
-        {
-            "id": "lead-gambling-001",
-            "email": "lead.gambling@company.com",
-            "password_hash": bcrypt.hash("lead123"),
-            "full_name": "Gambling Team Lead",
-            "roles": [{"role": "lead", "department_id": "dept-gambling"}],
-            "groups": ["group-gambling-team1"],
+            "id": "user-tech2-gambling",
+            "email": "tech2@gambling.local",
+            "passwordHash": hash_pw("tW&hdG4g$yDy"),
+            "fullName": "Tech2 Gambling",
+            "roles": ["tech"],
+            "groups": ["group-gambling-core"],
             "primary_department_id": "dept-gambling",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
         },
         {
-            "id": "lead-sweeps-001",
-            "email": "lead.sweeps@company.com",
-            "password_hash": bcrypt.hash("lead123"),
-            "full_name": "Sweeps Team Lead",
-            "roles": [{"role": "lead", "department_id": "dept-sweeps"}],
-            "groups": ["group-sweeps-team1"], 
-            "primary_department_id": "dept-sweeps",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        
-        # Buyers
-        {
-            "id": "buyer-gambling-001",
-            "email": "buyer1.gambling@company.com",
-            "password_hash": bcrypt.hash("buyer123"),
-            "full_name": "Alice Gambling Buyer",
-            "roles": [{"role": "buyer", "department_id": "dept-gambling"}],
-            "groups": ["group-gambling-team1"],
+            "id": "user-buyertech1-gambling",
+            "email": "buyertech1@gambling.local",
+            "passwordHash": hash_pw("NkHSF&sdwPKq"),
+            "fullName": "BuyerTech1 Gambling",
+            "roles": ["buyer", "tech"],
+            "groups": ["group-gambling-core"],
             "primary_department_id": "dept-gambling",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
         },
         {
-            "id": "buyer-gambling-002",
-            "email": "buyer2.gambling@company.com",
-            "password_hash": bcrypt.hash("buyer123"),
-            "full_name": "Bob Gambling Buyer",
-            "roles": [{"role": "buyer", "department_id": "dept-gambling"}],
-            "groups": ["group-gambling-team1"],
-            "primary_department_id": "dept-gambling", 
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "buyer-sweeps-001",
-            "email": "buyer1.sweeps@company.com",
-            "password_hash": bcrypt.hash("buyer123"),
-            "full_name": "Charlie Sweeps Buyer",
-            "roles": [{"role": "buyer", "department_id": "dept-sweeps"}],
-            "groups": ["group-sweeps-team1"],
-            "primary_department_id": "dept-sweeps",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        
-        # Designers
-        {
-            "id": "designer-gambling-001",
-            "email": "designer.gambling@company.com",
-            "password_hash": bcrypt.hash("designer123"),
-            "full_name": "David Gambling Designer",
-            "roles": [{"role": "designer", "department_id": "dept-gambling"}],
-            "groups": [],
+            "id": "user-buyertech2-gambling",
+            "email": "buyertech2@gambling.local",
+            "passwordHash": hash_pw("lHq52bN&QHV5"),
+            "fullName": "BuyerTech2 Gambling",
+            "roles": ["buyer", "tech"],
+            "groups": ["group-gambling-core"],
             "primary_department_id": "dept-gambling",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
         },
         {
-            "id": "designer-sweeps-001", 
-            "email": "designer.sweeps@company.com",
-            "password_hash": bcrypt.hash("designer123"),
-            "full_name": "Eva Sweeps Designer",
-            "roles": [{"role": "designer", "department_id": "dept-sweeps"}],
-            "groups": [],
-            "primary_department_id": "dept-sweeps",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "id": "user-designer1-gambling",
+            "email": "designer1@gambling.local",
+            "passwordHash": hash_pw("sC#0ss0WYccc"),
+            "fullName": "Designer1 Gambling",
+            "roles": ["designer"],
+            "groups": ["group-gambling-core"],
+            "primary_department_id": "dept-gambling",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
         },
-        
-        # Tech  
         {
-            "id": "tech-001",
-            "email": "tech@company.com",
-            "password_hash": bcrypt.hash("tech123"),
-            "full_name": "Frank Tech Developer",
-            "roles": [{"role": "tech", "department_id": "dept-tech"}],
-            "groups": [],
-            "primary_department_id": "dept-tech",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "id": "user-designer2-gambling",
+            "email": "designer2@gambling.local",
+            "passwordHash": hash_pw("RbxTdBZeqwAB"),
+            "fullName": "Designer2 Gambling",
+            "roles": ["designer"],
+            "groups": ["group-gambling-core"],
+            "primary_department_id": "dept-gambling",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
         },
-        
-        # Office Manager
         {
-            "id": "office-001",
-            "email": "office@company.com",
-            "password_hash": bcrypt.hash("office123"),
-            "full_name": "Grace Office Manager",
-            "roles": [{"role": "office_manager", "department_id": "dept-office"}],
-            "groups": [],
-            "primary_department_id": "dept-office",
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
+            "id": "user-tl1-gambling",
+            "email": "tl1@gambling.local",
+            "passwordHash": hash_pw("@gNB#X4wYJ8#"),
+            "fullName": "TeamLead1 Gambling",
+            "roles": ["team_lead"],
+            "groups": ["group-gambling-core"],
+            "primary_department_id": "dept-gambling",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-tl2-gambling",
+            "email": "tl2@gambling.local",
+            "passwordHash": hash_pw("LE3qVN1aFkL2"),
+            "fullName": "TeamLead2 Gambling",
+            "roles": ["team_lead"],
+            "groups": ["group-gambling-core"],
+            "primary_department_id": "dept-gambling",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+
+        # ====== SWIP ======
+        {
+            "id": "user-buyer1-swip",
+            "email": "buyer1@swip.local",
+            "passwordHash": hash_pw("N8of*c1fVtXJ"),
+            "fullName": "Buyer1 SWIP",
+            "roles": ["buyer"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-buyer2-swip",
+            "email": "buyer2@swip.local",
+            "passwordHash": hash_pw("a4ytL%20SSHe"),
+            "fullName": "Buyer2 SWIP",
+            "roles": ["buyer"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-tech1-swip",
+            "email": "tech1@swip.local",
+            "passwordHash": hash_pw("tech1@swip.local"),
+            "fullName": "Tech1 SWIP",
+            "roles": ["tech"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-tech2-swip",
+            "email": "tech2@swip.local",
+            "passwordHash": hash_pw("$h%VNGYbo2sF"),
+            "fullName": "Tech2 SWIP",
+            "roles": ["tech"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-designer1-swip",
+            "email": "designer1@swip.local",
+            "passwordHash": hash_pw("$X!vu6B4PrLb"),
+            "fullName": "Designer1 SWIP",
+            "roles": ["designer"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-designer2-swip",
+            "email": "designer2@swip.local",
+            "passwordHash": hash_pw("0AuKjlC0f7a6"),
+            "fullName": "Designer2 SWIP",
+            "roles": ["designer"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-tl1-swip",
+            "email": "tl1@swip.local",
+            "passwordHash": hash_pw("l8Tm9eQRfp$b"),
+            "fullName": "TeamLead1 SWIP",
+            "roles": ["team_lead"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
+        {
+            "id": "user-tl2-swip",
+            "email": "tl2@swip.local",
+            "passwordHash": hash_pw("6gStI9Oj#RqO"),
+            "fullName": "TeamLead2 SWIP",
+            "roles": ["team_lead"],
+            "groups": ["group-swip-core"],
+            "primary_department_id": "dept-swip",
+            "isActivated": True, "isActive": True, "active": True,
+            "status": "active", "emailVerified": True, "isDisabled": False,
+            "createdAt": ts, "updatedAt": ts,
+        },
     ]
-    
     await db.users.insert_many(users)
     print(f"✓ Created {len(users)} users")
 
-async def create_boards():
-    """Create seed boards with new visibility system"""
-    print("Creating boards...")
-    
-    boards = [
-        {
-            "id": "board-gambling-buyers",
-            "name": "Gambling Buyers", 
-            "key": "GAM_BUY",
-            "type": "tasks",
-            "template": "kanban-basic",
-            "is_archived": False,
-            "settings": {"assignee_enabled": True},
-            "default_department_id": "dept-gambling",
-            "visibility": {
-                "department_ids": ["dept-gambling"],
-                "role_ids": [],
-                "mode": "users",
-                "allowed_group_ids": [],
-                "allowed_user_ids": ["head-gambling-001", "lead-gambling-001", "buyer-gambling-001", "buyer-gambling-002"],
-                "permissions": {"read": True, "create": True, "edit": True, "manage": False}
-            },
-            "content_filter": {"by_department": "viewer"},  # Users see only their dept tasks
-            "allowed_roles": [],  # Legacy - will be migrated
-            "allowed_group_ids": [],
-            "members": [],
-            "owners": ["ceo-001"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "board-sweeps-buyers",
-            "name": "Sweeps Buyers",
-            "key": "SWE_BUY", 
-            "type": "tasks",
-            "template": "kanban-basic",
-            "is_archived": False,
-            "settings": {"assignee_enabled": True},
-            "default_department_id": "dept-sweeps",
-            "visibility": {
-                "department_ids": ["dept-sweeps"],
-                "role_ids": [],
-                "mode": "users", 
-                "allowed_group_ids": [],
-                "allowed_user_ids": ["head-sweeps-001", "lead-sweeps-001", "buyer-sweeps-001"],
-                "permissions": {"read": True, "create": True, "edit": True, "manage": False}
-            },
-            "content_filter": {"by_department": "viewer"},
-            "allowed_roles": [],
-            "allowed_group_ids": [],
-            "members": [],
-            "owners": ["ceo-001"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "board-gambling-designers",
-            "name": "Gambling Designers", 
-            "key": "GAM_DES",
-            "type": "tasks",
-            "template": "kanban-basic",
-            "is_archived": False,
-            "settings": {"assignee_enabled": True},
-            "default_department_id": "dept-gambling",
-            "visibility": {
-                "department_ids": ["dept-gambling"],
-                "role_ids": [],
-                "mode": "users",
-                "allowed_group_ids": [],
-                "allowed_user_ids": ["designer-gambling-001"],
-                "permissions": {"read": True, "create": True, "edit": True, "manage": False}
-            },
-            "content_filter": {"by_department": "viewer"},
-            "allowed_roles": [],
-            "allowed_group_ids": [],
-            "members": [],
-            "owners": ["ceo-001"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "board-sweeps-designers",
-            "name": "Sweeps Designers",
-            "key": "SWE_DES",
-            "type": "tasks", 
-            "template": "kanban-basic",
-            "is_archived": False,
-            "settings": {"assignee_enabled": True},
-            "default_department_id": "dept-sweeps",
-            "visibility": {
-                "department_ids": ["dept-sweeps"],
-                "role_ids": [],
-                "mode": "users",
-                "allowed_group_ids": [],
-                "allowed_user_ids": ["designer-sweeps-001"],
-                "permissions": {"read": True, "create": True, "edit": True, "manage": False}
-            },
-            "content_filter": {"by_department": "viewer"},
-            "allowed_roles": [],
-            "allowed_group_ids": [],
-            "members": [],
-            "owners": ["ceo-001"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "board-tech",
-            "name": "Tech Development",
-            "key": "TECH",
-            "type": "tasks",
-            "template": "kanban-tj-tech",
-            "is_archived": False,
-            "settings": {"assignee_enabled": True},
-            "default_department_id": "dept-tech",
-            "visibility": {
-                "department_ids": ["dept-tech"],
-                "role_ids": [],
-                "mode": "users",
-                "allowed_group_ids": [],
-                "allowed_user_ids": ["tech-001"],
-                "permissions": {"read": True, "create": True, "edit": True, "manage": False}
-            },
-            "content_filter": {"by_department": "viewer"},
-            "allowed_roles": [],
-            "allowed_group_ids": [],
-            "members": [],
-            "owners": ["cto-001"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        },
-        {
-            "id": "board-expenses",
-            "name": "Expenses",
-            "key": "EXPENSES", 
-            "type": "expenses",
-            "template": "kanban-basic",
-            "is_archived": False,
-            "settings": {"assignee_enabled": True},
-            "default_department_id": None,  # Cross-department
-            "visibility": {
-                "department_ids": [],  # All departments
-                "role_ids": [],
-                "mode": "users",
-                "allowed_group_ids": [],
-                "allowed_user_ids": [],  # Will be populated by ACL rules
-                "permissions": {"read": True, "create": True, "edit": False, "manage": False}
-            },
-            "content_filter": None,  # Special expenses logic
-            "allowed_roles": [],
-            "allowed_group_ids": [],
-            "members": [],
-            "owners": ["ceo-001", "coo-001", "cto-001"],
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        }
-    ]
-    
-    await db.boards.insert_many(boards)
-    print(f"✓ Created {len(boards)} boards")
+async def create_boards_and_columns():
+    print("Creating boards & columns...")
 
-async def create_columns():
-    """Create seed columns for boards"""
-    print("Creating columns...")
-    
-    columns = [
-        # Gambling Buyers board
-        {"id": "col-gam-buy-todo", "board_id": "board-gambling-buyers", "key": "TODO", "name": "Todo", "order": 1},
-        {"id": "col-gam-buy-progress", "board_id": "board-gambling-buyers", "key": "IN_PROGRESS", "name": "In Progress", "order": 2},
-        {"id": "col-gam-buy-done", "board_id": "board-gambling-buyers", "key": "DONE", "name": "Done", "order": 3},
-        
-        # Sweeps Buyers board
-        {"id": "col-swe-buy-todo", "board_id": "board-sweeps-buyers", "key": "TODO", "name": "Todo", "order": 1},
-        {"id": "col-swe-buy-progress", "board_id": "board-sweeps-buyers", "key": "IN_PROGRESS", "name": "In Progress", "order": 2},
-        {"id": "col-swe-buy-done", "board_id": "board-sweeps-buyers", "key": "DONE", "name": "Done", "order": 3},
-        
-        # Gambling Designers board
-        {"id": "col-gam-des-queue", "board_id": "board-gambling-designers", "key": "QUEUE", "name": "Queue", "order": 1},
-        {"id": "col-gam-des-doing", "board_id": "board-gambling-designers", "key": "DOING", "name": "Doing", "order": 2},
-        {"id": "col-gam-des-done", "board_id": "board-gambling-designers", "key": "DONE", "name": "Done", "order": 3},
-        
-        # Sweeps Designers board
-        {"id": "col-swe-des-queue", "board_id": "board-sweeps-designers", "key": "QUEUE", "name": "Queue", "order": 1},
-        {"id": "col-swe-des-doing", "board_id": "board-sweeps-designers", "key": "DOING", "name": "Doing", "order": 2},
-        {"id": "col-swe-des-done", "board_id": "board-sweeps-designers", "key": "DONE", "name": "Done", "order": 3},
-        
-        # Tech board
-        {"id": "col-tech-todo", "board_id": "board-tech", "key": "TODO", "name": "Todo", "order": 1},
-        {"id": "col-tech-dev", "board_id": "board-tech", "key": "IN_DEV", "name": "In Dev", "order": 2},
-        {"id": "col-tech-review", "board_id": "board-tech", "key": "REVIEW", "name": "Review", "order": 3},
-        {"id": "col-tech-done", "board_id": "board-tech", "key": "DONE", "name": "Done", "order": 4},
-        
-        # Expenses board
-        {"id": "col-exp-pending", "board_id": "board-expenses", "key": "PENDING", "name": "Pending", "order": 1},
-        {"id": "col-exp-approved", "board_id": "board-expenses", "key": "APPROVED", "name": "Approved", "order": 2},
-        {"id": "col-exp-paid", "board_id": "board-expenses", "key": "PAID", "name": "Paid", "order": 3},
+    ts = now_utc()
+    boards = [
+        # Gambling
+        {
+            "id": "board-gambling",
+            "key": "GAM",
+            "name": "Gambling Board",
+            "type": "tasks",
+            "template": "kanban-basic",
+            "is_archived": False,
+            "settings": {"assignee_enabled": True},
+            "default_department_id": "dept-gambling",
+            "visibility": {
+                "department_ids": ["dept-gambling"],
+                "role_ids": [],
+                "mode": "users",
+                "allowed_group_ids": [],
+                "allowed_user_ids": [
+                    "user-tl1-gambling",
+                    "user-tl2-gambling",
+                    "user-tech1-gambling",
+                    "user-tech2-gambling",
+                    "user-buyertech1-gambling",
+                    "user-buyertech2-gambling",
+                    "user-designer1-gambling",
+                    "user-designer2-gambling",
+                    "admin-001",
+                ],
+                "permissions": {"read": True, "create": True, "edit": True, "manage": True},
+            },
+            "content_filter": {"by_department": "viewer"},
+            "members": [],
+            "owners": ["admin-001"],
+            "createdAt": ts,
+            "updatedAt": ts,
+        },
+        # SWIP
+        {
+            "id": "board-swip",
+            "key": "SWP",
+            "name": "SWIP Board",
+            "type": "tasks",
+            "template": "kanban-basic",
+            "is_archived": False,
+            "settings": {"assignee_enabled": True},
+            "default_department_id": "dept-swip",
+            "visibility": {
+                "department_ids": ["dept-swip"],
+                "role_ids": [],
+                "mode": "users",
+                "allowed_group_ids": [],
+                "allowed_user_ids": [
+                    "user-tl1-swip",
+                    "user-tl2-swip",
+                    "user-buyer1-swip",
+                    "user-buyer2-swip",
+                    "user-tech1-swip",
+                    "user-tech2-swip",
+                    "user-designer1-swip",
+                    "user-designer2-swip",
+                    "admin-001",
+                ],
+                "permissions": {"read": True, "create": True, "edit": True, "manage": True},
+            },
+            "content_filter": {"by_department": "viewer"},
+            "members": [],
+            "owners": ["admin-001"],
+            "createdAt": ts,
+            "updatedAt": ts,
+        },
     ]
-    
-    # Add timestamps
-    for col in columns:
-        col["created_at"] = datetime.now(timezone.utc)
-        col["updated_at"] = datetime.now(timezone.utc)
-    
+
+    columns = [
+        # Gambling columns
+        {"id": "col-gam-todo", "board_id": "board-gambling", "key": "TODO", "name": "Todo", "order": 1, "createdAt": ts, "updatedAt": ts},
+        {"id": "col-gam-doing", "board_id": "board-gambling", "key": "IN_PROGRESS", "name": "In Progress", "order": 2, "createdAt": ts, "updatedAt": ts},
+        {"id": "col-gam-done", "board_id": "board-gambling", "key": "DONE", "name": "Done", "order": 3, "createdAt": ts, "updatedAt": ts},
+        # SWIP columns
+        {"id": "col-swp-todo", "board_id": "board-swip", "key": "TODO", "name": "Todo", "order": 1, "createdAt": ts, "updatedAt": ts},
+        {"id": "col-swp-doing", "board_id": "board-swip", "key": "IN_PROGRESS", "name": "In Progress", "order": 2, "createdAt": ts, "updatedAt": ts},
+        {"id": "col-swp-done", "board_id": "board-swip", "key": "DONE", "name": "Done", "order": 3, "createdAt": ts, "updatedAt": ts},
+    ]
+
+    await db.boards.insert_many(boards)
     await db.columns.insert_many(columns)
-    print(f"✓ Created {len(columns)} columns")
+    print(f"✓ Created {len(boards)} boards, {len(columns)} columns")
 
 async def create_tasks():
-    """Create sample tasks"""
     print("Creating tasks...")
-    
+    ts = now_utc()
     tasks = [
-        # Gambling Buyers tasks
+        # Gambling sample tasks
         {
-            "id": "task-gam-buy-001",
-            "board_key": "GAM_BUY",
-            "column_id": "col-gam-buy-todo",
-            "title": "Research new gambling vendors",
-            "description": "Find alternative suppliers for Q1",
+            "id": "task-gam-001",
+            "board_key": "GAM",
+            "column_id": "col-gam-todo",
+            "title": "Kickoff Gambling Campaign",
+            "description": "Подготовить initial setup",
             "priority": "high",
-            "tags": ["research", "vendors"],
-            "due_date": "2025-02-15",
-            "assignee_id": "buyer-gambling-001",
-            "creator_id": "lead-gambling-001",
-            "department_id": "dept-gambling"
-        },
-        {
-            "id": "task-gam-buy-002", 
-            "board_key": "GAM_BUY",
-            "column_id": "col-gam-buy-progress",
-            "title": "Budget approval for new tools",
-            "description": "Getting approval for design software licenses",
-            "priority": "medium",
-            "tags": ["budget", "tools"],
+            "tags": ["kickoff", "setup"],
             "due_date": None,
-            "assignee_id": "buyer-gambling-002",
-            "creator_id": "buyer-gambling-002",
-            "department_id": "dept-gambling"
-        },
-        
-        # Sweeps Buyers tasks
-        {
-            "id": "task-swe-buy-001",
-            "board_key": "SWE_BUY",
-            "column_id": "col-swe-buy-todo", 
-            "title": "Sweeps compliance review",
-            "description": "Review new sweepstakes regulations",
-            "priority": "high",
-            "tags": ["compliance", "legal"],
-            "due_date": "2025-01-30",
-            "assignee_id": "buyer-sweeps-001",
-            "creator_id": "lead-sweeps-001", 
-            "department_id": "dept-sweeps"
-        },
-        
-        # Expenses tasks
-        {
-            "id": "task-exp-001",
-            "board_key": "EXPENSES",
-            "column_id": "col-exp-pending",
-            "title": "Office supplies - Gambling dept",
-            "description": "Monthly office supply order",
-            "priority": "medium",
-            "tags": ["office", "supplies"],
-            "due_date": None,
-            "assignee_id": "office-001",
-            "creator_id": "buyer-gambling-001",
+            "assignee_id": "user-tl1-gambling",
+            "creator_id": "admin-001",
             "department_id": "dept-gambling",
-            "amount": 250.75,
-            "category": "office_supplies"
+            "createdAt": ts,
+            "updatedAt": ts,
         },
         {
-            "id": "task-exp-002",
-            "board_key": "EXPENSES",
-            "column_id": "col-exp-approved",
-            "title": "Software licenses - Tech dept", 
-            "description": "Annual development tool licenses",
-            "priority": "high",
-            "tags": ["software", "licenses"],
+            "id": "task-gam-002",
+            "board_key": "GAM",
+            "column_id": "col-gam-doing",
+            "title": "Integrate trackers",
+            "description": "Поставить пиксели и события",
+            "priority": "medium",
+            "tags": ["tracking"],
             "due_date": None,
-            "assignee_id": "cto-001",
-            "creator_id": "tech-001",
-            "department_id": "dept-tech",
-            "amount": 4800.00,
-            "category": "software"
-        }
+            "assignee_id": "user-tech1-gambling",
+            "creator_id": "user-tl1-gambling",
+            "department_id": "dept-gambling",
+            "createdAt": ts,
+            "updatedAt": ts,
+        },
+        # SWIP sample tasks
+        {
+            "id": "task-swp-001",
+            "board_key": "SWP",
+            "column_id": "col-swp-todo",
+            "title": "Creative brief SWIP",
+            "description": "Собрать исходники",
+            "priority": "high",
+            "tags": ["brief", "design"],
+            "due_date": None,
+            "assignee_id": "user-designer1-swip",
+            "creator_id": "user-tl1-swip",
+            "department_id": "dept-swip",
+            "createdAt": ts,
+            "updatedAt": ts,
+        },
+        {
+            "id": "task-swp-002",
+            "board_key": "SWP",
+            "column_id": "col-swp-doing",
+            "title": "Proxy domains SWIP",
+            "description": "Поднять прокси домены для прогонов",
+            "priority": "medium",
+            "tags": ["infra"],
+            "due_date": None,
+            "assignee_id": "user-tech2-swip",
+            "creator_id": "user-tl2-swip",
+            "department_id": "dept-swip",
+            "createdAt": ts,
+            "updatedAt": ts,
+        },
     ]
-    
-    # Add timestamps
-    for task in tasks:
-        task["created_at"] = datetime.now(timezone.utc)
-        task["updated_at"] = datetime.now(timezone.utc)
-    
     await db.tasks.insert_many(tasks)
     print(f"✓ Created {len(tasks)} tasks")
 
+# ---------- main ----------
 async def main():
-    """Main seeding function"""
-    print("🌱 Starting seed process for new ACL system...")
-    
+    print("🌱 Seeding started...")
     try:
+        # проверка соединения заранее (чтобы не ждать в середине)
+        await db.command("ping")
         await clear_collections()
+        await reset_indexes()
         await create_departments()
         await create_groups()
         await create_users()
-        await create_boards()
-        await create_columns()
+        await create_boards_and_columns()
         await create_tasks()
-        
-        print("\n✅ New ACL system seed completed successfully!")
-        print("\nLogin credentials:")
-        print("CEO: ceo@company.com / ceo123") 
-        print("COO: coo@company.com / coo123")
-        print("CTO: cto@company.com / cto123")
-        print("Gambling Head: head.gambling@company.com / head123")
-        print("Sweeps Head: head.sweeps@company.com / head123")
-        print("Gambling Lead: lead.gambling@company.com / lead123")
-        print("Sweeps Lead: lead.sweeps@company.com / lead123")
-        print("Gambling Buyer 1: buyer1.gambling@company.com / buyer123")
-        print("Gambling Buyer 2: buyer2.gambling@company.com / buyer123")
-        print("Sweeps Buyer: buyer1.sweeps@company.com / buyer123")
-        print("Gambling Designer: designer.gambling@company.com / designer123")
-        print("Sweeps Designer: designer.sweeps@company.com / designer123")
-        print("Tech Developer: tech@company.com / tech123")
-        print("Office Manager: office@company.com / office123")
-        
+        print("\n✅ Seed completed!")
+        print("\nLogin credentials (plain):")
+        print("Super Admin: admin@company.com / admin123")
+        print("— GAMBLING —")
+        print("tech1@gambling.local / f@DOr&hVMLfk")
+        print("tech2@gambling.local / tW&hdG4g$yDy")
+        print("buyertech1@gambling.local / NkHSF&sdwPKq")
+        print("buyertech2@gambling.local / lHq52bN&QHV5")
+        print("designer1@gambling.local / sC#0ss0WYccc")
+        print("designer2@gambling.local / RbxTdBZeqwAB")
+        print("tl1@gambling.local / @gNB#X4wYJ8#")
+        print("tl2@gambling.local / LE3qVN1aFkL2")
+        print("— SWIP —")
+        print("buyer1@swip.local / N8of*c1fVtXJ")
+        print("buyer2@swip.local / a4ytL%20SSHe")
+        print("tech1@swip.local / tech1@swip.local")
+        print("tech2@swip.local / $h%VNGYbo2sF")
+        print("designer1@swip.local / $X!vu6B4PrLb")
+        print("designer2@swip.local / 0AuKjlC0f7a6")
+        print("tl1@swip.local / l8Tm9eQRfp$b")
+        print("tl2@swip.local / 6gStI9Oj#RqO")
     except Exception as e:
         print(f"❌ Seed failed: {e}")
         raise

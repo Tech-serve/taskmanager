@@ -7,18 +7,50 @@ import { Task } from '../models/Task';
 import { User } from '../models/User';
 import { AuthRequest, Role } from '../types';
 import { requireAdmin } from '../middleware/auth';
-import { validate, createBoardSchema, updateBoardSchema, createColumnSchema } from '../middleware/validation';
+import {
+  validate,
+  createBoardSchema,
+  updateBoardSchema,
+  createColumnSchema,
+} from '../middleware/validation';
 
 const router = Router();
 
 // Допустимые шаблоны в БД (enum)
 const ALLOWED_TEMPLATES = new Set(['kanban-basic', 'kanban-tj-tech', 'empty']);
 
-/** ==================== НОРМАЛИЗАЦИЯ РОЛЕЙ ==================== */
-const canon = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+/** ==================== НОРМАЛИЗАЦИЯ ==================== */
+const canon = (s: unknown) =>
+  String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+
 const canonList = (arr: unknown): string[] =>
-  Array.from(new Set((Array.isArray(arr) ? arr : []).map(canon).filter(Boolean)));
-/** ============================================================ */
+  Array.from(
+    new Set((Array.isArray(arr) ? arr : []).map(canon).filter(Boolean))
+  );
+
+const upperList = (arr: unknown): string[] =>
+  Array.from(
+    new Set(
+      (Array.isArray(arr) ? arr : [])
+        .map((v) => String(v ?? '').trim().toUpperCase())
+        .filter(Boolean)
+    )
+  );
+/** ====================================================== */
+
+/** Проверка пересечения департаментов пользователя и борда */
+function hasDepartmentAccess(
+  userDepartments: string[] | undefined,
+  boardVisibleDepartments: string[] | undefined
+) {
+  const u = new Set((userDepartments || []).map((d) => String(d).toUpperCase()));
+  const b = Array.from(
+    new Set((boardVisibleDepartments || []).map((d) => String(d).toUpperCase()))
+  );
+  // пустой список на борде = доступ всем
+  if (!b.length) return true;
+  return b.some((k) => u.has(k));
+}
 
 /** Общая проверка доступа к конкретной доске */
 const checkBoardAccess = async (user: any, boardKey: string) => {
@@ -26,10 +58,16 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
   const board = await Board.findOne({ key });
   if (!board) return null;
 
-  const userRoles = canonList(user.roles || []);
+  const rawRoles = (user as any).effectiveRoles ?? user.roles ?? [];
+  const userRoles = canonList(rawRoles);
   const userRoleSet = new Set(userRoles);
 
-  // Админ видит всё
+  // Сначала проверка видимости по департаментам
+  if (!hasDepartmentAccess((user as any).departments, (board as any).visibleDepartments)) {
+    return null;
+  }
+
+  // Админ видит всё (если прошёл департаменты)
   if (userRoleSet.has(Role.ADMIN)) return board;
 
   // Buyer — исторически имеет доступ к базовым
@@ -38,7 +76,9 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
   }
 
   // Доступ по ролям доски
-  const boardRoles = canonList((board as any).allowedRoles || (board as any).allowed_roles || []);
+  const boardRoles = canonList(
+    (board as any).allowedRoles || (board as any).allowed_roles || []
+  );
   for (const r of boardRoles) {
     if (userRoleSet.has(r)) return board;
   }
@@ -58,8 +98,16 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
 router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
-    const userRoles = canonList(user.roles || []);
+    const rawRoles = (user as any).effectiveRoles ?? user.roles ?? [];
+    const userRoles = canonList(rawRoles);
+    const userDeps = (user as any).departments || [];
     let query: any = {};
+
+    // Фильтр по департаментам борда: либо видим всем, либо пересечение
+    const depOr = [
+      { $or: [{ visibleDepartments: { $exists: false } }, { visibleDepartments: { $size: 0 } }] },
+      { visibleDepartments: { $in: upperList(userDeps) } },
+    ];
 
     if (!userRoles.includes(Role.ADMIN)) {
       const or: any[] = [
@@ -73,7 +121,10 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
         or.push({ key: { $in: ['BUY', 'TECH', 'DES'] } });
       }
 
-      query = { $or: or };
+      query = { $and: [{ $or: or }, { $or: depOr }] };
+    } else {
+      // админ видит всё, но учитываем департаментную видимость
+      query = { $or: depOr };
     }
 
     const boards = await Board.find(query).sort({ createdAt: -1 });
@@ -102,110 +153,130 @@ router.get('/by-key/:key', async (req: AuthRequest, res: Response): Promise<void
   }
 });
 
-// POST /api/boards — создать доску (идемпотентно, без проблем с типами)
-router.post('/', requireAdmin, validate(createBoardSchema), async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const body = { ...(req.body || {}) };
+/** POST /api/boards — создать доску (идемпотентно) */
+router.post(
+  '/',
+  requireAdmin,
+  validate(createBoardSchema),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const body = { ...(req.body || {}) };
 
-    // Ключ → UPPERCASE
-    body.key = String(body.key || '').trim().toUpperCase();
+      // Ключ → UPPERCASE
+      body.key = String(body.key || '').trim().toUpperCase();
 
-    // Нормализация allowedRoles
-    if (body.allowedRoles !== undefined) {
-      body.allowedRoles = canonList(body.allowedRoles);
-    } else {
-      body.allowedRoles = [];
-    }
+      // Нормализация allowedRoles
+      body.allowedRoles =
+        body.allowedRoles !== undefined ? canonList(body.allowedRoles) : [];
 
-    // Чистим составные поля
-    if (!Array.isArray(body.members)) body.members = [];
-    if (!Array.isArray(body.owners)) body.owners = [];
-    if (!Array.isArray(body.allowedGroupIds)) body.allowedGroupIds = [];
+      // Нормализация видимости по департаментам
+      body.visibleDepartments =
+        body.visibleDepartments !== undefined
+          ? upperList(body.visibleDepartments)
+          : [];
 
-    // Шаблон
-    const incomingTemplate = String(body.template || '').trim();
-    if (String(body.type || '') === 'expenses') {
-      body.template = 'kanban-basic';
-    } else {
-      body.template = ALLOWED_TEMPLATES.has(incomingTemplate) ? incomingTemplate : 'kanban-basic';
-    }
+      // Чистим составные поля
+      if (!Array.isArray(body.members)) body.members = [];
+      if (!Array.isArray(body.owners)) body.owners = [];
+      if (!Array.isArray(body.allowedGroupIds)) body.allowedGroupIds = [];
 
-    // Атомарный апсерт: если ключ свободен — создаст; если уже есть — просто ничего не изменит
-    const now = new Date();
-    const upRes = await Board.updateOne(
-      { key: body.key },
-      {
-        $setOnInsert: {
-          id: uuidv4(),
-          ...body,
-          createdAt: now,
-          updatedAt: now,
+      // Шаблон
+      const incomingTemplate = String(body.template || '').trim();
+      if (String(body.type || '') === 'expenses') {
+        body.template = 'kanban-basic';
+      } else {
+        body.template = ALLOWED_TEMPLATES.has(incomingTemplate)
+          ? incomingTemplate
+          : 'kanban-basic';
+      }
+
+      // Идемпотентный upsert: НЕ трогаем createdAt/updatedAt — Mongoose сам поставит
+      const upRes = await Board.updateOne(
+        { key: body.key },
+        {
+          $setOnInsert: {
+            id: uuidv4(),
+            ...body,
+          },
         },
-      },
-      { upsert: true }
-    );
+        { upsert: true, setDefaultsOnInsert: true }
+      );
 
-    // Если upsert сработал — будет upsertedId; если undefined — запись уже существовала
-    const created = Boolean((upRes as any).upsertedId || (upRes as any).upsertedCount);
+      const created = Boolean(
+        (upRes as any).upsertedId || (upRes as any).upsertedCount
+      );
 
-    // Берём актуальный документ и отдаём клиенту
-    const doc = await Board.findOne({ key: body.key });
-    if (!doc) {
-      return void res.status(500).json({ error: 'Failed to create or read board' });
+      const doc = await Board.findOne({ key: body.key });
+      if (!doc) {
+        return void res.status(500).json({ error: 'Failed to create or read board' });
+      }
+
+      res.status(created ? 201 : 200).json(doc);
+    } catch (e: any) {
+      // На случай дубликата индекса — отдаём существующую
+      if (e?.code === 11000 && e?.keyPattern?.key) {
+        try {
+          const k = String(req.body?.key || '').trim().toUpperCase();
+          const existing = await Board.findOne({ key: k });
+          if (existing) return void res.status(200).json(existing);
+        } catch {}
+      }
+      console.error('Create board error:', e);
+      res.status(400).json({ error: e?.message || 'Bad Request' });
     }
-
-    res.status(created ? 201 : 200).json(doc);
-  } catch (e: any) {
-    // На случай редкого дубликата индекса — возвращаем существующую как 200 (идемпотентность)
-    if (e?.code === 11000 && e?.keyPattern?.key) {
-      try {
-        const k = String(req.body?.key || '').trim().toUpperCase();
-        const existing = await Board.findOne({ key: k });
-        if (existing) return void res.status(200).json(existing);
-      } catch {}
-    }
-    console.error('Create board error:', e);
-    res.status(400).json({ error: e?.message || 'Bad Request' });
   }
-});
+);
 
 /** PATCH /api/boards/:id — обновить доску (админ) */
-router.patch('/:id', requireAdmin, validate(updateBoardSchema), async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const { id } = req.params;
-    const update = { ...(req.body || {}) };
+router.patch(
+  '/:id',
+  requireAdmin,
+  validate(updateBoardSchema),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { id } = req.params;
+      const update = { ...(req.body || {}) };
 
-    const board = await Board.findOne({ id });
-    if (!board) {
-      res.status(404).json({ error: 'Board not found' });
-      return;
-    }
-
-    if (typeof update.template === 'string') {
-      const incomingTemplate = String(update.template).trim();
-      const effectiveType = typeof update.type === 'string' ? update.type : board.type;
-      if (String(effectiveType) === 'expenses') {
-        update.template = 'kanban-basic';
-      } else {
-        update.template = ALLOWED_TEMPLATES.has(incomingTemplate) ? incomingTemplate : 'kanban-basic';
+      const board = await Board.findOne({ id });
+      if (!board) {
+        res.status(404).json({ error: 'Board not found' });
+        return;
       }
+
+      // Шаблон
+      if (typeof update.template === 'string') {
+        const incomingTemplate = String(update.template).trim();
+        const effectiveType =
+          typeof update.type === 'string' ? update.type : board.type;
+        update.template =
+          String(effectiveType) === 'expenses'
+            ? 'kanban-basic'
+            : ALLOWED_TEMPLATES.has(incomingTemplate)
+            ? incomingTemplate
+            : 'kanban-basic';
+      }
+
+      // Нормализация allowedRoles
+      if (update.allowedRoles !== undefined) {
+        update.allowedRoles = canonList(update.allowedRoles);
+      }
+
+      // Нормализация видимости по департаментам
+      if (update.visibleDepartments !== undefined) {
+        update.visibleDepartments = upperList(update.visibleDepartments);
+      }
+
+      // НИКАКИХ ручных updatedAt — timestamps сам обновит при save()
+      Object.assign(board, update);
+      await board.save();
+
+      res.json(board);
+    } catch (e) {
+      console.error('Update board error:', e);
+      res.status(500).json({ error: 'Internal server error' });
     }
-
-    // Нормализация allowedRoles
-    if (update.allowedRoles !== undefined) {
-      update.allowedRoles = canonList(update.allowedRoles);
-    }
-
-    Object.assign(board, update);
-    board.updatedAt = new Date();
-    await board.save();
-
-    res.json(board);
-  } catch (e) {
-    console.error('Update board error:', e);
-    res.status(500).json({ error: 'Internal server error' });
   }
-});
+);
 
 /** DELETE /api/boards/:id */
 router.delete('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
@@ -252,58 +323,66 @@ router.get('/:boardId/columns', async (req: AuthRequest, res: Response): Promise
 });
 
 /** POST /api/boards/:boardId/columns — создать колонку (админ) */
-router.post('/:boardId/columns', requireAdmin, validate(createColumnSchema), async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const { boardId } = req.params;
-    const { key, name, order } = req.body || {};
+router.post(
+  '/:boardId/columns',
+  requireAdmin,
+  validate(createColumnSchema),
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { boardId } = req.params;
+      const { key, name, order } = req.body || {};
 
-    // 1) есть ли борда?
-    const board = await Board.findOne({ id: boardId });
-    if (!board) {
-      res.status(404).json({ error: 'Board not found' });
-      return;
+      // 1) есть ли борда?
+      const board = await Board.findOne({ id: boardId });
+      if (!board) {
+        res.status(404).json({ error: 'Board not found' });
+        return;
+      }
+
+      // 2) нормализация входа
+      const colKey = String(key || '').trim().toUpperCase();
+      const colName = String(name || '').trim();
+      if (!colKey || !colName) {
+        res.status(400).json({ error: 'key and name are required' });
+        return;
+      }
+
+      // 3) идемпотентность: если колонка с таким key уже есть на борде — вернуть её
+      const existing = await Column.findOne({ boardId, key: colKey });
+      if (existing) {
+        res.status(200).json(existing.toJSON());
+        return;
+      }
+
+      // 4) рассчитать order, если не пришёл
+      let finalOrder: number;
+      if (typeof order === 'number' && Number.isFinite(order)) {
+        finalOrder = order;
+      } else {
+        const last = await Column.find({ boardId })
+          .sort({ order: -1 })
+          .limit(1)
+          .lean();
+        finalOrder = last.length ? (Number(last[0].order) || 0) + 1 : 1;
+      }
+
+      // 5) создать колонку
+      const column = new Column({
+        id: uuidv4(),
+        boardId,
+        key: colKey,
+        name: colName,
+        order: finalOrder,
+      });
+
+      await column.save();
+      res.status(201).json(column.toJSON());
+    } catch (e) {
+      console.error('Create column error:', e);
+      res.status(500).json({ error: 'Internal server error' });
     }
-
-    // 2) нормализация входа
-    const colKey = String(key || '').trim().toUpperCase();
-    const colName = String(name || '').trim();
-    if (!colKey || !colName) {
-      res.status(400).json({ error: 'key and name are required' });
-      return;
-    }
-
-    // 3) идемпотентность: если колонка с таким key уже есть на борде — вернуть её
-    const existing = await Column.findOne({ boardId, key: colKey });
-    if (existing) {
-      res.status(200).json(existing.toJSON());
-      return;
-    }
-
-    // 4) рассчитать order, если не пришёл
-    let finalOrder: number;
-    if (typeof order === 'number' && Number.isFinite(order)) {
-      finalOrder = order;
-    } else {
-      const last = await Column.find({ boardId }).sort({ order: -1 }).limit(1).lean();
-      finalOrder = last.length ? (Number(last[0].order) || 0) + 1 : 1;
-    }
-
-    // 5) создать колонку
-    const column = new Column({
-      id: uuidv4(),
-      boardId,
-      key: colKey,
-      name: colName,
-      order: finalOrder,
-    });
-
-    await column.save();
-    res.status(201).json(column.toJSON());
-  } catch (e) {
-    console.error('Create column error:', e);
-    res.status(500).json({ error: 'Internal server error' });
   }
-});
+);
 
 /** GET /api/boards/:boardKey/column-stats */
 router.get('/:boardKey/column-stats', async (req: AuthRequest, res: Response): Promise<void> => {
@@ -343,41 +422,56 @@ router.get('/:boardKey/column-stats', async (req: AuthRequest, res: Response): P
 });
 
 /** GET /api/boards/:boardKey/tasks — задачи борда */
-/** GET /api/boards/:boardKey/tasks — задачи борда */
 router.get('/:boardKey/tasks', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = req.user!;
-    const userRoles = canonList(user.roles || []);          // ['admin', 'team_lead', ...]
+    const rawRoles = (user as any).effectiveRoles ?? user.roles ?? [];
+    const userRoles = canonList(rawRoles); // ['admin', 'team_lead', ...]
+    const userRoleSet = new Set(userRoles);
     const key = String(req.params.boardKey || '').toUpperCase();
     const { columns, assignees, q } = req.query;
 
-    // доступ к борде
+    // доступ к борде (учитывает департаменты)
     const board = await checkBoardAccess(user, key);
     if (!board) {
       res.status(404).json({ error: 'Board not found or access denied' });
       return;
     }
 
-    // накапливаем условия через $and, чтобы корректно комбинировать фильтры
+    // === ⬇️ ВСТАВКА, О КОТОРОЙ ТЫ СПРАШИВАЛ ⬇️
+    const boardRoles = canonList(
+      (board as any).allowedRoles || (board as any).allowed_roles || []
+    );
+    let roleAllowedOnBoard = boardRoles.some(r => userRoleSet.has(r));
+
+    // Хардкод-допуск: на BUY/DES/TECH техи видят всё, даже если не включены в allowedRoles
+    if (!roleAllowedOnBoard && ['BUY', 'DES', 'TECH'].includes(key) && userRoleSet.has('tech')) {
+      roleAllowedOnBoard = true;
+    }
+    // можно аналогично расширить для дизайнеров на DES и т.п., если понадобится
+    // === ⬆️ КОНЕЦ ВСТАВКИ ⬆️
+
+    // накапливаем условия через $and
     const and: any[] = [{ boardKey: key }];
 
-    const isAdmin = userRoles.includes('admin');
-    const isTeamLead = userRoles.includes('team_lead');
-    const isBuyer = userRoles.includes('buyer');
-    const isTech = userRoles.includes('tech');
-    const isDesigner = userRoles.includes('designer');
+    const isAdmin = userRoleSet.has('admin');
+    const isTeamLead = userRoleSet.has('team_lead');
+    const isBuyer = userRoleSet.has('buyer');
+    const isTech = userRoleSet.has('tech');
+    const isDesigner = userRoleSet.has('designer');
 
     if (!isAdmin) {
       if (key === 'EXP') {
-        // 🔒 Expenses: только свои задачи (созданные или назначенные)
+        // Expenses: только свои задачи
         and.push({ $or: [{ creatorId: user.id }, { assigneeId: user.id }] });
       } else if (isTeamLead) {
-        // Тимлид видит всё на прочих бордах (кроме EXP, см. выше)
-        // никаких доп. ограничений
+        // тимлид видит всё (кроме EXP — см. выше)
+      } else if (roleAllowedOnBoard) {
+        // роль разрешена на борде — видит всё
       } else if (isBuyer) {
         and.push({ creatorId: user.id });
       } else if (isTech && key === 'TECH') {
-        // видит всё на TECH
+        // видит всё на TECH (дублируется ролью, но оставим для обратной совместимости)
       } else if (isDesigner && key === 'DES') {
         // видит всё на DES
       } else {
@@ -417,14 +511,21 @@ router.get('/:boardKey/assignable-users', async (req: AuthRequest, res: Response
     const board = await Board.findOne({ key }).lean();
     if (!board) return res.status(404).json({ error: 'Board not found' });
 
-    const roleAliases = canonList((board as any).allowedRoles || (board as any).allowed_roles || []);
+    const roleAliases = canonList(
+      (board as any).allowedRoles || (board as any).allowed_roles || []
+    );
     const or: any[] = [];
     if (roleAliases.length) or.push({ roles: { $in: roleAliases } });
-    if (Array.isArray((board as any).allowedGroupIds) && (board as any).allowedGroupIds.length) {
+    if (
+      Array.isArray((board as any).allowedGroupIds) &&
+      (board as any).allowedGroupIds.length
+    ) {
       or.push({ groups: { $in: (board as any).allowedGroupIds } });
     }
-    if (Array.isArray(board.members) && board.members.length) or.push({ id: { $in: board.members } });
-    if (Array.isArray(board.owners) && board.owners.length) or.push({ id: { $in: board.owners } });
+    if (Array.isArray(board.members) && board.members.length)
+      or.push({ id: { $in: board.members } });
+    if (Array.isArray(board.owners) && board.owners.length)
+      or.push({ id: { $in: board.owners } });
 
     const query: any = { status: 'active' };
     if (or.length) query.$or = or;
@@ -434,7 +535,7 @@ router.get('/:boardKey/assignable-users', async (req: AuthRequest, res: Response
       .sort({ fullName: 1 })
       .lean();
 
-    res.json(users.map(u => ({ ...u, full_name: u.fullName })));
+    res.json(users.map((u) => ({ ...u, full_name: u.fullName })));
   } catch (e) {
     console.error('Assignable users error:', e);
     res.status(500).json({ error: 'Internal server error' });

@@ -4,11 +4,14 @@ import { AuthRequest, UserStatus } from '../types';
 import { requireAdmin } from '../middleware/auth';
 import { AuthUtils } from '../utils/auth';
 import { RoleBinding } from '../models/RoleBinding';
+import { Department as DepartmentModel } from '../models/Department';
 
 const router = Router();
 
-/** ===== Helpers: нормализация, union и батч-мапа биндингов ===== */
+/** ===== Helpers: нормализация ролей/департаментов, union и биндинги ===== */
 const norm = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const toUpper = (s: unknown) => String(s ?? '').trim().toUpperCase();
+
 const ROLE_ALIASES: Record<string, string> = {
   admin: 'admin',
   buyer: 'buyer',
@@ -23,11 +26,19 @@ const ROLE_ALIASES: Record<string, string> = {
   'head-elite': 'team_lead',
   tl: 'team_lead',
 };
-const canonize = (arr: unknown[]) =>
-  Array.from(new Set((Array.isArray(arr) ? arr : []).map(x => ROLE_ALIASES[norm(x)] ?? norm(x)).filter(Boolean)));
+
+const canonizeRoles = (arr: unknown[]) =>
+  Array.from(new Set((Array.isArray(arr) ? arr : [])
+    .map(x => ROLE_ALIASES[norm(x)] ?? norm(x))
+    .filter(Boolean)));
+
+const canonizeDepartments = (arr: unknown[]) =>
+  Array.from(new Set((Array.isArray(arr) ? arr : [])
+    .map(x => toUpper(x))
+    .filter(Boolean)));
 
 function unionRoles(real: string[] | undefined, added: string[] | undefined) {
-  return Array.from(new Set([...(canonize(real || [])), ...(canonize(added || []))]));
+  return Array.from(new Set([...(canonizeRoles(real || [])), ...(canonizeRoles(added || []))]));
 }
 
 async function getBindingsMap(userIds: string[]) {
@@ -49,6 +60,20 @@ async function getEffective(userId: string, real: string[] | undefined) {
   const added = rows.map(r => (r as any).role);
   return unionRoles(real, added);
 }
+
+/** Проверяем, что все департаменты существуют и активны */
+async function ensureDepartmentsExist(keys: string[]): Promise<void> {
+  if (!keys.length) throw new Error('At least one department is required');
+  const uniq = Array.from(new Set(keys.map(toUpper)));
+  const found = await DepartmentModel.find({ key: { $in: uniq }, isActive: true })
+    .select({ key: 1 }).lean();
+  const foundSet = new Set(found.map(d => (d as any).key));
+  const missing = uniq.filter(k => !foundSet.has(k));
+  if (missing.length) {
+    throw new Error(`Unknown departments: ${missing.join(', ')}`);
+  }
+}
+
 /** ===================================================================== */
 
 // GET /api/users
@@ -70,6 +95,8 @@ router.get('/', requireAdmin, async (_req: AuthRequest, res: Response): Promise<
         full_name: u.fullName,
         roles: u.roles,
         effective_roles: effective,
+        /** отдаём массив департаментов */
+        departments: (u as any).departments || [],
         groups: u.groups,
         status: u.status,
         created_at: u.createdAt,
@@ -109,6 +136,7 @@ router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
       full_name: user.fullName,
       roles: user.roles,
       effective_roles: effective,
+      departments: (user as any).departments || [],
       groups: user.groups,
       status: user.status,
       created_at: user.createdAt,
@@ -124,12 +152,19 @@ router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
 // POST /api/users
 router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { email, fullName, roles, sendInvitation, password } = req.body;
+    const { email, fullName, roles, sendInvitation, password, departments } = req.body;
 
     if (!email || !fullName || !roles || !Array.isArray(roles)) {
       res.status(400).json({ error: 'Email, fullName, and roles are required' });
       return;
     }
+
+    const depKeys = canonizeDepartments(departments || []);
+    if (!depKeys.length) {
+      res.status(400).json({ error: 'At least one department is required' });
+      return;
+    }
+    await ensureDepartmentsExist(depKeys);
 
     const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) { res.status(400).json({ error: 'User with this email already exists' }); return; }
@@ -137,7 +172,8 @@ router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<
     const userData: any = {
       email: email.toLowerCase(),
       fullName,
-      roles: canonize(roles), // <-- нормализуем
+      roles: canonizeRoles(roles),
+      departments: depKeys,
       status: sendInvitation ? UserStatus.PENDING : UserStatus.ACTIVE
     };
 
@@ -166,6 +202,7 @@ router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<
         full_name: user.fullName,
         roles: user.roles,
         effective_roles: effective,
+        departments: user.departments,
         status: user.status,
         created_at: user.createdAt,
         updated_at: user.updatedAt
@@ -173,9 +210,9 @@ router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<
       invitationUrl,
       message: sendInvitation ? 'User created and invitation sent' : 'User created successfully'
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Create user error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: error?.message || 'Internal server error' });
   }
 });
 
@@ -183,15 +220,25 @@ router.post('/', requireAdmin, async (req: AuthRequest, res: Response): Promise<
 router.put('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { fullName, roles, status, email, password } = req.body;
+    const { fullName, roles, status, email, password, departments } = req.body;
 
     const user = await User.findOne({ id });
     if (!user) { res.status(404).json({ error: 'User not found' }); return; }
 
     if (fullName !== undefined) user.fullName = fullName;
-    if (roles !== undefined) user.roles = canonize(roles); // <-- нормализуем
+    if (roles !== undefined) user.roles = canonizeRoles(roles);
     if (status !== undefined) user.status = status;
     if (email !== undefined) user.email = email.toLowerCase();
+
+    if (departments !== undefined) {
+      const depKeys = canonizeDepartments(departments);
+      if (!depKeys.length) {
+        res.status(400).json({ error: 'At least one department is required' });
+        return;
+      }
+      await ensureDepartmentsExist(depKeys);
+      user.departments = depKeys;
+    }
 
     if (password !== undefined && password !== '') {
       user.passwordHash = await AuthUtils.hashPassword(password);
@@ -208,13 +255,14 @@ router.put('/:id', requireAdmin, async (req: AuthRequest, res: Response): Promis
       full_name: user.fullName,
       roles: user.roles,
       effective_roles: effective,
+      departments: user.departments,
       status: user.status,
       created_at: user.createdAt,
       updated_at: user.updatedAt
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Update user error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: error?.message || 'Internal server error' });
   }
 });
 

@@ -1,7 +1,6 @@
 import { Request } from 'express';
 import { Document, Types } from 'mongoose';
 
-// Enums
 export enum Role {
   ADMIN = 'admin',
   BUYER = 'buyer',
@@ -38,16 +37,17 @@ export enum UserStatus {
   PENDING = 'pending'
 }
 
-// Interfaces
+/** ===== Types ===== */
+export type DepartmentKey = string;
+
 export interface IUser extends Document {
   _id: Types.ObjectId;
   id: string;
   email: string;
   passwordHash: string;
   fullName: string;
-  /** Храним строки (snake_case), чтобы поддерживать “живые” роли */
   roles: string[];
-  department?: Department;
+  departments: DepartmentKey[];
   groups: string[];
   status: UserStatus;
   lastLogin?: Date;
@@ -73,13 +73,13 @@ export interface IBoard extends Document {
     commentsEnabled: boolean;
     timeTrackingEnabled: boolean;
   };
-  /** Список строковых ключей ролей (snake_case) */
   allowedRoles: string[];
   allowedGroupIds: string[];
   members: string[];
   owners: string[];
   createdAt: Date;
   updatedAt: Date;
+  visibleDepartments?: DepartmentKey[];
   department?: Department;
 }
 
@@ -133,18 +133,20 @@ export interface AuthRequest extends Request {
   user?: IUser;
 }
 
-// DTOs
+/** ===== DTOs (добавлены departments/visibleDepartments) ===== */
 export interface CreateUserDTO {
   email: string;
   password?: string;
   fullName: string;
   roles: string[];
+  departments: DepartmentKey[];
   status?: UserStatus;
 }
 
 export interface UpdateUserDTO {
   fullName?: string;
   roles?: string[];
+  departments?: DepartmentKey[];
   status?: UserStatus;
   email?: string;
 }
@@ -158,6 +160,7 @@ export interface CreateBoardDTO {
   allowedGroupIds?: string[];
   members?: string[];
   owners?: string[];
+  visibleDepartments?: DepartmentKey[];
 }
 
 export interface UpdateBoardDTO {
@@ -170,6 +173,7 @@ export interface UpdateBoardDTO {
   allowedGroupIds?: string[];
   members?: string[];
   owners?: string[];
+  visibleDepartments?: DepartmentKey[];
 }
 
 export interface CreateColumnDTO {

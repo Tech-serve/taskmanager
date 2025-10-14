@@ -112,7 +112,7 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
     const userData: any = {
    email: email.toLowerCase(),
    fullName,
-   roles: canonize(roles), 
+   roles: canonize(roles), // ← НОРМАЛИЗАЦИЯ ОДИН РАЗ, НА ЗАПИСЬ
    status: status || UserStatus.ACTIVE
  };
 

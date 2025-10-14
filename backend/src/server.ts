@@ -1,10 +1,13 @@
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { connectDB } from './config/database';
 import { errorHandler } from './middleware/errorHandler';
-import { authMiddleware, requireAdmin } from './middleware/auth';
+import { authMiddleware } from './middleware/auth';
 
 // Routes
 import authRoutes from './routes/auth';
@@ -14,6 +17,7 @@ import columnRoutes from './routes/columns';
 import taskRoutes from './routes/tasks';
 import adminRoutes from './routes/admin';
 import adminRolesRoutes from './routes/adminRoles';
+import departmentsRouter from './routes/departments';
 
 // Load environment variables
 dotenv.config();
@@ -24,12 +28,42 @@ const PORT = parseInt(process.env.PORT || '8001', 10);
 // Security middleware
 app.use(helmet());
 
+// ----------- CORS (строго по .env, без '*') -----------
+const envOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const allowedOrigins = new Set(
+  envOrigins.length ? envOrigins : ['http://localhost:3000', 'http://127.0.0.1:3000']
+);
+
+// чтобы кеш не ломал Origin-варьирование
+app.use((req, res, next) => {
+  res.setHeader('Vary', 'Origin');
+  next();
+});
+
+const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
+  // Разрешаем инструменты без Origin (curl/Postman)
+  if (!origin) return cb(null, true);
+  if (allowedOrigins.has(origin)) return cb(null, true);
+  return cb(new Error('CORS: origin not allowed'));
+};
+
 app.use(
   cors({
-    origin: process.env.CORS_ORIGINS?.split(',') || '*',
+    origin: corsOrigin,
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    exposedHeaders: ['Content-Length'],
   })
 );
+
+// Preflight явный (некоторые прокси это любят)
+app.options('*', cors({ origin: corsOrigin, credentials: true }));
+// ------------------------------------------------------
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -38,14 +72,23 @@ app.use(express.urlencoded({ extended: true }));
 // Connect to database
 connectDB();
 
-// API Routes
+/** ===================== API Routes ===================== */
 app.use('/api/auth', authRoutes);
+
 app.use('/api/users', authMiddleware, userRoutes);
 app.use('/api/boards', authMiddleware, boardRoutes);
 app.use('/api/columns', authMiddleware, columnRoutes);
 app.use('/api/tasks', authMiddleware, taskRoutes);
-app.use('/api/admin', authMiddleware, adminRoutes); 
-app.use('/api/admin/roles', authMiddleware, requireAdmin, adminRolesRoutes);
+
+// Общие админские (если есть)
+app.use('/api/admin', authMiddleware, adminRoutes);
+
+// Роли
+app.use('/api/admin/roles', authMiddleware, adminRolesRoutes);
+
+// Департаменты (правила — внутри роутера)
+app.use('/api/admin/departments', departmentsRouter);
+/** ====================================================== */
 
 // Health check
 app.get('/health', (_req, res) => {

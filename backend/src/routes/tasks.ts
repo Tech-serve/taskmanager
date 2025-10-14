@@ -23,10 +23,9 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
   }
 
   // Роли на борде
-  if (board.allowedRoles && board.allowedRoles.some((r: Role) => user.roles?.includes(r))) {
+  if (board.allowedRoles?.some((r) => user.roles?.includes(String(r)))) {
     return board;
   }
-
   // Участник или владелец
   if ((board.members || []).includes(user.id)) return board;
   if ((board.owners || []).includes(user.id)) return board;
