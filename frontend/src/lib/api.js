@@ -43,6 +43,8 @@ const safeLocalStorage = {
 
 // ==== роли: канонизация и объединение ====
 const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+const upper = (s) => String(s ?? '').trim().toUpperCase();
+const upperList = (arr) => Array.from(new Set((Array.isArray(arr) ? arr : []).map(upper).filter(Boolean)));
 const ROLE_ALIASES = {
   admin: 'admin',
   buyer: 'buyer',
@@ -65,7 +67,9 @@ const withEffectiveRoles = (userLike) => {
   const real = canonRoles(userLike.roles || []);
   const extra = canonRoles(userLike.effective_roles || []);
   const effective = Array.from(new Set([...real, ...extra]));
-  return { ...userLike, roles: real, effective_roles: effective };
+  // департаменты — приводим к UPPERCASE массиву
+  const departments = upperList(userLike.departments || userLike.department || []);
+  return { ...userLike, roles: real, effective_roles: effective, departments };
 };
 
 // ==== axios базовая настройка ====
@@ -122,11 +126,9 @@ const mapTaskFromBackend = (res) => {
   return res;
 };
 
-// ===== helpers для User-ответов (везде гарантируем effective_roles) =====
+// ===== helpers для User-ответов (везде гарантируем effective_roles, departments[]) =====
 const mapUserFromAuthLogin = (res) => {
-  // ожидаем { access_token, token_type, user: {...} }
   if (res?.data?.user) {
-    // сохранить токен (если хочешь держать всё в api-слое)
     if (res.data.access_token) {
       safeLocalStorage.setItem('token', res.data.access_token);
     }
@@ -136,7 +138,6 @@ const mapUserFromAuthLogin = (res) => {
 };
 
 const mapUserFromAuthMe = (res) => {
-  // ожидаем профиль плоско: {...}
   if (res?.data && typeof res.data === 'object') {
     res.data = withEffectiveRoles(res.data);
   }
@@ -165,7 +166,6 @@ export const authAPI = {
   },
   register: async (userData) => {
     const res = await api.post('/auth/register', userData);
-    // бэк уже возвращает effective_roles, но нормализуем на всякий
     if (res?.data && typeof res.data === 'object') {
       res.data = withEffectiveRoles(res.data);
     }
@@ -175,7 +175,6 @@ export const authAPI = {
     const res = await api.get('/auth/me');
     return mapUserFromAuthMe(res);
   },
-  // опционально — logout helper
   logout: () => safeLocalStorage.removeItem('token'),
 };
 
@@ -183,8 +182,20 @@ export const authAPI = {
 export const boardsAPI = {
   getAll: () => api.get('/boards'),
   getByKey: (key) => api.get(`/boards/by-key/${encodeURIComponent(String(key).toUpperCase())}`),
-  create: (data) => api.post('/boards', data),
-  update: (id, data) => api.patch(`/boards/${id}`, data),
+  create: (data) => {
+    const payload = { ...data };
+    if (payload.visible_departments) {
+      payload.visibleDepartments = upperList(payload.visible_departments);
+    }
+    return api.post('/boards', payload);
+  },
+  update: (id, data) => {
+    const payload = { ...data };
+    if (payload.visible_departments) {
+      payload.visibleDepartments = upperList(payload.visible_departments);
+    }
+    return api.patch(`/boards/${id}`, payload);
+  },
   delete: (id) => api.delete(`/boards/${id}`),
 };
 
@@ -243,13 +254,10 @@ export const usersAPI = {
   getById: async (id) => {
     const res = await api.get(`/users/${id}`);
     return mapUsersArray(res);
-    // вернёт объект с effective_roles
   },
-  // кандидаты для назначения
   getAssignableUsers: async (boardKey) => {
     try {
       const res = await api.get(`/boards/${encodeURIComponent(String(boardKey).toUpperCase())}/assignable-users`);
-      // эти ответы обычно короткие; если там есть roles — нормализуем
       return mapUsersArray(res);
     } catch {
       const res = await api.get('/users');
@@ -264,4 +272,11 @@ export const rolesAPI = {
   create: (data) => api.post('/admin/roles', data),
   update: (id, data) => api.patch(`/admin/roles/${id}`, data),
   remove: (id) => api.delete(`/admin/roles/${id}`),
+};
+
+export const departmentsAPI = {
+  list:    () => api.get('/departments'),
+  create:  (data) => api.post('/departments', data),
+  update:  (id, data) => api.patch(`/departments/${id}`, data),
+  remove:  (id) => api.delete(`/departments/${id}`),
 };

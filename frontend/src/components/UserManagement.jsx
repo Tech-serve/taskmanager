@@ -1,6 +1,7 @@
+// frontend/src/components/UserManagement.jsx
 import React, { useState, useEffect } from 'react';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent } from './ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -10,7 +11,6 @@ import {
   Search, 
   Edit, 
   Trash2, 
-  Mail, 
   Shield, 
   User as UserIcon, 
   Eye, 
@@ -22,8 +22,9 @@ import {
 import { api } from '../lib/api';
 import { toast } from '../hooks/use-toast';
 
-// ✅ селектор ролей (лежит рядом: src/components/RoleSelect.jsx)
+// селекторы
 import RoleSelect from './RoleSelect';
+import DepartmentSelect from './DepartmentSelect';
 
 const UserManagement = () => {
   const [users, setUsers] = useState([]);
@@ -33,11 +34,14 @@ const UserManagement = () => {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
-    roles: []
+    roles: [],
+    departments: [] // массив UPPERCASE ключей департаментов
   });
+
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [passwordCopied, setPasswordCopied] = useState(false);
@@ -45,7 +49,7 @@ const UserManagement = () => {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [resetPasswordMode, setResetPasswordMode] = useState(false);
 
-  // оставляем твои цвета бейджей в списке пользователей
+  // цвета бейджей ролей
   const roleOptions = [
     { value: 'admin',    label: 'Admin',    color: 'bg-violet-100 text-violet-800' },
     { value: 'buyer',    label: 'Buyer',    color: 'bg-emerald-100 text-emerald-800' },
@@ -67,7 +71,7 @@ const UserManagement = () => {
     try {
       setLoading(true);
       const response = await api.get('/users');
-      setUsers(response.data);
+      setUsers(response.data || []);
     } catch (error) {
       console.error('Failed to fetch users:', error);
       toast({
@@ -96,7 +100,8 @@ const UserManagement = () => {
     setFormData({
       fullName: '',
       email: '',
-      roles: []
+      roles: [],
+      departments: [] // требуем выбрать в форме
     });
     setShowPassword(false);
     setPasswordCopied(false);
@@ -108,8 +113,12 @@ const UserManagement = () => {
     setFormData({
       fullName: user.full_name,
       email: user.email,
-      roles: user.roles,
-      status: user.status
+      roles: user.roles || [],
+      status: user.status,
+      // бэк может отдавать как строки, так и объекты {key,name}
+      departments: Array.isArray(user.departments)
+        ? user.departments.map(d => typeof d === 'string' ? d : (d?.key || d?.name || '')).filter(Boolean)
+        : []
     });
     setNewPassword('');
     setResetPasswordMode(false);
@@ -127,16 +136,9 @@ const UserManagement = () => {
       await navigator.clipboard.writeText(text);
       setPasswordCopied(true);
       setTimeout(() => setPasswordCopied(false), 2000);
-      toast({
-        title: "Copied!",
-        description: "Password copied to clipboard.",
-      });
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to copy password.",
-        variant: "destructive",
-      });
+      toast({ title: "Copied!", description: "Password copied to clipboard." });
+    } catch {
+      toast({ title: "Error", description: "Failed to copy password.", variant: "destructive" });
     }
   };
 
@@ -150,11 +152,11 @@ const UserManagement = () => {
   const submitAddUser = async () => {
     try {
       if (!formData.fullName || !formData.email || formData.roles.length === 0) {
-        toast({
-          title: "Error",
-          description: "Please fill in all required fields.",
-          variant: "destructive",
-        });
+        toast({ title: "Error", description: "Please fill in all required fields.", variant: "destructive" });
+        return;
+      }
+      if (!Array.isArray(formData.departments) || formData.departments.length === 0) {
+        toast({ title: "Error", description: "Choose at least one department.", variant: "destructive" });
         return;
       }
 
@@ -162,15 +164,12 @@ const UserManagement = () => {
         fullName: formData.fullName,
         email: formData.email,
         roles: formData.roles,
+        departments: formData.departments.map(d => String(d).toUpperCase()),
         password: generatedPassword,
         sendInvitation: false
       });
 
-      toast({
-        title: "Success",
-        description: "User created successfully!",
-      });
-
+      toast({ title: "Success", description: "User created successfully!" });
       setShowAddDialog(false);
       fetchUsers();
     } catch (error) {
@@ -185,11 +184,13 @@ const UserManagement = () => {
 
   const submitEditUser = async () => {
     try {
+      if (!selectedUser) return;
       const updateData = {
         fullName: formData.fullName,
         email: formData.email,
         roles: formData.roles,
-        status: formData.status
+        status: formData.status,
+        departments: (formData.departments || []).map(d => String(d).toUpperCase()),
       };
 
       if (resetPasswordMode && newPassword) {
@@ -198,11 +199,7 @@ const UserManagement = () => {
 
       await api.put(`/users/${selectedUser.id}`, updateData);
 
-      toast({
-        title: "Success",
-        description: "User updated successfully!",
-      });
-
+      toast({ title: "Success", description: "User updated successfully!" });
       setShowEditDialog(false);
       fetchUsers();
     } catch (error) {
@@ -215,45 +212,35 @@ const UserManagement = () => {
     }
   };
 
-const confirmDeleteUser = async () => {
-  try {
-    if (!selectedUser) return;
-
-    await api.delete(`/users/${selectedUser.id}`);
-
-    toast({
-      title: "Success",
-      description: "User deleted successfully!",
-    });
-
-    setShowDeleteDialog(false);
-    setSelectedUser(null);
-    fetchUsers();
-  } catch (error) {
-    console.error('Failed to delete user:', error);
-    toast({
-      title: "Error",
-      description: error?.response?.data?.error || "Failed to delete user. Please try again.",
-      variant: "destructive",
-    });
-  }
-};
-
-  // (можно удалить — больше не используется, оставил нетронутым)
-  const toggleRole = (role) => {
-    setFormData(prev => ({
-      ...prev,
-      roles: prev.roles.includes(role)
-        ? prev.roles.filter(r => r !== role)
-        : [...prev.roles, role]
-    }));
+  const confirmDeleteUser = async () => {
+    try {
+      if (!selectedUser) return;
+      await api.delete(`/users/${selectedUser.id}`);
+      toast({ title: "Success", description: "User deleted successfully!" });
+      setShowDeleteDialog(false);
+      setSelectedUser(null);
+      fetchUsers();
+    } catch (error) {
+      console.error('Failed to delete user:', error);
+      toast({
+        title: "Error",
+        description: error?.response?.data?.error || "Failed to delete user. Please try again.",
+        variant: "destructive",
+      });
+    }
   };
 
-  const filteredUsers = users.filter(user => 
-    (user.full_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (user.email || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (user.roles || []).some(role => (role || '').toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const filteredUsers = users.filter(user => {
+    const dept = Array.isArray(user.departments)
+      ? user.departments.map(d => (typeof d === 'string' ? d : (d?.name || d?.key || ''))).join(' ').toLowerCase()
+      : '';
+    return (
+      (user.full_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (user.email || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (user.roles || []).some(role => (role || '').toLowerCase().includes(searchTerm.toLowerCase())) ||
+      dept.includes(searchTerm.toLowerCase())
+    );
+  });
 
   const getRoleBadgeColor = (role) => {
     const roleOption = roleOptions.find(r => r.value === role);
@@ -265,10 +252,29 @@ const confirmDeleteUser = async () => {
     return statusOption?.color || 'bg-gray-100 text-gray-800';
   };
 
+  const renderDeptBadges = (departments) => {
+    if (!Array.isArray(departments) || departments.length === 0) {
+      return <span className="text-xs text-gray-400">—</span>;
+    }
+    return (
+      <div className="flex flex-wrap gap-1">
+        {departments.map((d, idx) => {
+          const key = typeof d === 'string' ? d : (d?.key || d?.name || `D${idx}`);
+          const label = typeof d === 'string' ? d : (d?.name || d?.key || key);
+          return (
+            <Badge key={`${key}-${idx}`} className="bg-gray-100 text-gray-800">
+              {label}
+            </Badge>
+          );
+        })}
+      </div>
+    );
+  };
+
   if (loading) {
     return (
-      <div className="p-6">
-        <div className="flex items-center justify-center h-64">
+      <div className="h-full min-h-0 p-6">
+        <div className="flex items-center justify-center h-full">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
         </div>
       </div>
@@ -276,9 +282,9 @@ const confirmDeleteUser = async () => {
   }
 
   return (
-    <div className="p-6">
+    <div className="h-full min-h-0 flex flex-col p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 shrink-0">
         <Button 
           onClick={handleAddUser}
           className="bg-indigo-600 hover:bg-indigo-700"
@@ -290,11 +296,11 @@ const confirmDeleteUser = async () => {
       </div>
 
       {/* Search */}
-      <div className="mb-6">
+      <div className="mb-6 shrink-0">
         <div className="relative">
           <Search className="w-4 h-4 absolute left-3 top-3 text-gray-400" />
           <Input
-            placeholder="Search users by name, email, or role..."
+            placeholder="Search users by name, email, role or department..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-10"
@@ -303,111 +309,118 @@ const confirmDeleteUser = async () => {
         </div>
       </div>
 
-      {/* Users List - Jira Style Table */}
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="text-left p-4 font-semibold text-gray-900">User</th>
-                  <th className="text-left p-4 font-semibold text-gray-900">Email</th>
-                  <th className="text-left p-4 font-semibold text-gray-900">Roles</th>
-                  <th className="text-left p-4 font-semibold text-gray-900">Status</th>
-                  <th className="text-left p-4 font-semibold text-gray-900">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredUsers.map((user) => (
-                  <tr key={user.id} className="border-b hover:bg-gray-50 transition-colors">
-                    {/* User Column */}
-                    <td className="p-4">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
-                          {(user.full_name || 'Unknown').split(' ').map(n => n[0]).join('').toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="font-medium text-gray-900" data-testid={`user-name-${user.id}`}>
-                            {user.full_name || 'Unknown User'}
+      {/* Scrollable content */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {/* Users List - Jira Style Table */}
+        <Card>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    <th className="text-left p-4 font-semibold text-gray-900">User</th>
+                    <th className="text-left p-4 font-semibold text-gray-900">Email</th>
+                    <th className="text-left p-4 font-semibold text-gray-900">Roles</th>
+                    <th className="text-left p-4 font-semibold text-gray-900">Departments</th>
+                    <th className="text-left p-4 font-semibold text-gray-900">Status</th>
+                    <th className="text-left p-4 font-semibold text-gray-900">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUsers.map((user) => (
+                    <tr key={user.id} className="border-b hover:bg-gray-50 transition-colors">
+                      {/* User Column */}
+                      <td className="p-4">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                            {(user.full_name || 'Unknown').split(' ').map(n => n[0]).join('').toUpperCase()}
+                          </div>
+                          <div>
+                            <div className="font-medium text-gray-900" data-testid={`user-name-${user.id}`}>
+                              {user.full_name || 'Unknown User'}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    {/* Email Column */}
-                    <td className="p-4">
-                      <div className="text-sm text-gray-600" data-testid={`user-email-${user.id}`}>
-                        {user.email}
-                      </div>
-                    </td>
+                      {/* Email Column */}
+                      <td className="p-4">
+                        <div className="text-sm text-gray-600" data-testid={`user-email-${user.id}`}>
+                          {user.email}
+                        </div>
+                      </td>
 
-                    {/* Roles Column */}
-                    <td className="p-4">
-                      <div className="flex flex-wrap gap-1">
-                        {user.roles.map((role) => (
-                          <Badge 
-                            key={role} 
-                            className={getRoleBadgeColor(role)}
-                            data-testid={`user-role-${user.id}-${role}`}
+                      {/* Roles Column */}
+                      <td className="p-4">
+                        <div className="flex flex-wrap gap-1">
+                          {(user.roles || []).map((role) => (
+                            <Badge 
+                              key={role} 
+                              className={getRoleBadgeColor(role)}
+                              data-testid={`user-role-${user.id}-${role}`}
+                            >
+                              {role}
+                            </Badge>
+                          ))}
+                        </div>
+                      </td>
+
+                      {/* Departments Column */}
+                      <td className="p-4">{renderDeptBadges(user.departments)}</td>
+
+                      {/* Status Column */}
+                      <td className="p-4">
+                        <Badge 
+                          className={getStatusBadgeColor(user.status)}
+                          data-testid={`user-status-${user.id}`}
+                        >
+                          {user.status}
+                        </Badge>
+                      </td>
+
+                      {/* Actions Column */}
+                      <td className="p-4">
+                        <div className="flex space-x-2">
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={() => handleEditUser(user)}
+                            data-testid={`edit-user-${user.id}`}
                           >
-                            {role}
-                          </Badge>
-                        ))}
-                      </div>
-                    </td>
-
-                    {/* Status Column */}
-                    <td className="p-4">
-                      <Badge 
-                        className={getStatusBadgeColor(user.status)}
-                        data-testid={`user-status-${user.id}`}
-                      >
-                        {user.status}
-                      </Badge>
-                    </td>
-
-                    {/* Actions Column */}
-                    <td className="p-4">
-                      <div className="flex space-x-2">
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          onClick={() => handleEditUser(user)}
-                          data-testid={`edit-user-${user.id}`}
-                        >
-                          <Edit className="w-3 h-3 mr-1" />
-                          Edit
-                        </Button>
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          onClick={() => handleDeleteUser(user)}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                          data-testid={`delete-user-${user.id}`}
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-
-      {filteredUsers.length === 0 && (
-        <Card>
-          <CardContent className="p-8 text-center">
-            <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">No users found</h3>
-            <p className="text-gray-500">
-              {searchTerm ? 'Try adjusting your search criteria' : 'Get started by adding your first user'}
-            </p>
+                            <Edit className="w-3 h-3 mr-1" />
+                            Edit
+                          </Button>
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={() => handleDeleteUser(user)}
+                            className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            data-testid={`delete-user-${user.id}`}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardContent>
         </Card>
-      )}
+
+        {filteredUsers.length === 0 && (
+          <Card className="mt-6">
+            <CardContent className="p-8 text-center">
+              <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">No users found</h3>
+              <p className="text-gray-500">
+                {searchTerm ? 'Try adjusting your search criteria' : 'Get started by adding your first user'}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
       {/* Add User Dialog */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
@@ -438,13 +451,20 @@ const confirmDeleteUser = async () => {
               />
             </div>
 
-            {/* роли — селектор с лейблом и плейсхолдером */}
             <RoleSelect
               label="Roles *"
               value={formData.roles}
               onChange={(roles) => setFormData({ ...formData, roles })}
               required
               placeholder="Select roles…"
+            />
+
+            <DepartmentSelect
+              label="Departments *"
+              value={formData.departments}
+              onChange={(departments) => setFormData({ ...formData, departments })}
+              placeholder="Select departments…"
+              multiple
             />
 
             <div>
@@ -519,12 +539,19 @@ const confirmDeleteUser = async () => {
               />
             </div>
 
-            {/* роли — селектор */}
             <RoleSelect
               label="Roles"
               value={formData.roles}
               onChange={(roles) => setFormData({ ...formData, roles })}
               placeholder="Select roles…"
+            />
+
+            <DepartmentSelect
+              label="Departments *"
+              value={formData.departments}
+              onChange={(departments) => setFormData({ ...formData, departments })}
+              placeholder="Select departments…"
+              multiple
             />
 
             <div>

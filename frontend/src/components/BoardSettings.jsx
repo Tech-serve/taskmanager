@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Button } from './ui/button';
@@ -6,14 +6,18 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Switch } from './ui/switch';
 import { Badge } from './ui/badge';
-import { boardsAPI, columnsAPI, rolesAPI } from '../lib/api';
+import { boardsAPI, columnsAPI, rolesAPI, departmentsAPI } from '../lib/api';
 import { toast } from 'sonner';
 import { Settings, Plus, Trash2, Eye, Save, X } from 'lucide-react';
+
+// уже есть в проекте
+import DepartmentSelect from './DepartmentSelect';
 
 const BoardSettings = ({ board, onUpdate, onClose }) => {
   const navigate = useNavigate();
 
   const normalizeRole = (k) => String(k || '').trim().toLowerCase();
+  const normalizeDept = (k) => String(k || '').trim().toUpperCase();
 
   const [boardData, setBoardData] = useState({
     name: board?.name || '',
@@ -29,10 +33,17 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
       comments_enabled: board?.settings?.comments_enabled ?? false,
       time_tracking_enabled: board?.settings?.time_tracking_enabled ?? false,
     },
+    // имена под оба варианта, чтобы точно прилетало
     allowed_roles: board?.allowed_roles || board?.allowedRoles || [],
     allowed_group_ids: board?.allowed_group_ids || [],
     members: board?.members || [],
     owners: board?.owners || [],
+    // 🔹 департаменты (UPPERCASE ключи)
+    allowed_departments:
+      board?.allowed_departments ||
+      board?.allowedDepartments ||
+      board?.visibleDepartments || // ← читаем и это поле, если бэк отдаёт его
+      [],
   });
 
   const [columns, setColumns] = useState([]);
@@ -40,39 +51,45 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [markForDeletion, setMarkForDeletion] = useState(false);
 
-  const [allRoles, setAllRoles] = useState([]);   // список из /admin/roles (только для админов)
-  const [roleListReady, setRoleListReady] = useState(false); // чтобы не дёргать лишний раз
+  // Роли
+  const [allRoles, setAllRoles] = useState([]);
+  const [roleListReady, setRoleListReady] = useState(false);
+
+  // Департаменты (для подсказок в DepartmentSelect)
+  const [allDepartments, setAllDepartments] = useState([]);
+  const [deptListReady, setDeptListReady] = useState(false);
 
   const boardTypes = [
-    { value: 'tasks',    label: 'Task Board' },
+    { value: 'tasks', label: 'Task Board' },
     { value: 'expenses', label: 'Expense Board' },
   ];
 
   const BASE_TEMPLATES = [
     { value: 'kanban-basic', label: 'Basic Kanban', description: 'Simple workflow for general tasks', icon: '📋' },
   ];
-
   const EXPENSES_TEMPLATE = {
     value: 'expenses-default',
     label: 'Expenses (fixed)',
     description: 'Requests → Approved → Paid',
     icon: '💰',
   };
+  const templates = boardData.type === 'expenses' ? [EXPENSES_TEMPLATE] : BASE_TEMPLATES;
 
-  const templates = (boardData.type === 'expenses') ? [EXPENSES_TEMPLATE] : BASE_TEMPLATES;
-
-  useEffect(() => {
-    if (board?.id) fetchColumns();
-  }, [board?.id]);
+  useEffect(() => { if (board?.id) fetchColumns(); }, [board?.id]);
 
   useEffect(() => {
     setBoardData((prev) => ({
       ...prev,
       allowed_roles: board?.allowed_roles || board?.allowedRoles || [],
+      allowed_departments:
+        board?.allowed_departments ||
+        board?.allowedDepartments ||
+        board?.visibleDepartments || // ← синхронизация с полем бэка
+        [],
     }));
-  }, [board?.allowed_roles, board?.allowedRoles]);
+  }, [board?.allowed_roles, board?.allowedRoles, board?.allowed_departments, board?.allowedDepartments, board?.visibleDepartments]);
 
-  // если вдруг тип изменился — держим корректный template для UI
+  // корректируем template при смене типа
   useEffect(() => {
     setBoardData(prev => {
       if (prev.type === 'expenses' && prev.template !== 'expenses-default') {
@@ -85,7 +102,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
     });
   }, [boardData.type]);
 
-  // безопасная загрузка ролей: если 403 — просто не показываем список (и без ошибок в консоли)
+  // Роли (мягко — если 403, просто не показываем редактирование)
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -93,10 +110,26 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
         const r = await rolesAPI.list();
         const items = (r.data || []).filter((x) => x.isActive !== false);
         if (mounted) setAllRoles(items);
-      } catch (err) {
-        // если не админ — бэк вернёт 403. Тихо игнорируем.
+      } catch (_) {
+        // ignore 403
       } finally {
         if (mounted) setRoleListReady(true);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // Департаменты для подсказок
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const r = await departmentsAPI.list(); // ожидается /admin/departments
+        if (mounted) setAllDepartments(r.data || []);
+      } catch (_) {
+        // если нет прав — просто пусто
+      } finally {
+        if (mounted) setDeptListReady(true);
       }
     })();
     return () => { mounted = false; };
@@ -128,15 +161,21 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
         return;
       }
 
+      // нормализация
       const normalizedRoles = (boardData.allowed_roles || []).map(normalizeRole);
+      const normalizedDepartments = (boardData.allowed_departments || []).map(normalizeDept);
       const normalizedTemplate =
         boardData.template === 'expenses-default' ? 'kanban-basic' : boardData.template;
 
       const payload = {
         ...boardData,
         template: normalizedTemplate,
+        // дублируем ключи, чтобы попасть в любую схему на бэке
         allowedRoles: normalizedRoles,
         allowed_roles: normalizedRoles,
+        allowedDepartments: normalizedDepartments,
+        allowed_departments: normalizedDepartments,
+        visibleDepartments: normalizedDepartments, // ← совместимость с текущей моделью на бэке
       };
 
       const { data: updatedBoard } = await boardsAPI.update(board.id, payload);
@@ -249,7 +288,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
             </div>
 
             <div>
-              <Label htmlFor="board-type" className="text-gray-700 dark:text-white">Board Type</Label>
+              <Label className="text-gray-700 dark:text-white">Board Type</Label>
               <div className="px-3 py-2 border rounded-md bg-gray-50 dark:bg-gray-400 text-gray-700 dark:text-white border-gray-300 dark:border-gray-300">
                 {boardTypes.find(t => t.value === boardData.type)?.label || 'Tasks'}
                 <span className="text-xs text-gray-500 dark:text-gray-200 ml-2">(Cannot be changed)</span>
@@ -266,9 +305,8 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
               <span>Visibility & Access</span>
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Если список ролей доступен (админ) — показываем тумблеры.
-                Если нет (403) — показываем просто текущие allowed_roles (read-only). */}
+          <CardContent className="space-y-6">
+            {/* Roles */}
             <div>
               <Label className="text-sm font-medium text-gray-700 dark:text-white">Allowed Roles</Label>
 
@@ -322,6 +360,28 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
               </p>
             </div>
 
+            {/* Departments (как в User Management) */}
+            <div>
+              <Label className="text-sm font-medium text-gray-700 dark:text-white">Allowed Departments</Label>
+              <DepartmentSelect
+                value={boardData.allowed_departments}
+                onChange={(list) =>
+                  setBoardData((prev) => ({
+                    ...prev,
+                    allowed_departments: (Array.isArray(list) ? list : []).map(normalizeDept),
+                  }))
+                }
+                options={allDepartments}     // подсказки из /admin/departments
+                placeholder="Select departments…"
+                allowCreate
+              />
+              {(!boardData.allowed_departments || boardData.allowed_departments.length === 0) && (
+                <p className="text-xs text-gray-500 dark:text-gray-200 mt-1">
+                  No departments yet. Create them in <b>Admin → Departments</b>.
+                </p>
+              )}
+            </div>
+
             <div>
               <Label className="text-gray-700 dark:text-white">Current Access</Label>
               <div className="space-y-2">
@@ -339,7 +399,7 @@ const BoardSettings = ({ board, onUpdate, onClose }) => {
           <CardHeader>
             <CardTitle className="text-gray-900 dark:text-white">Feature Settings</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+        <CardContent className="space-y-4">
             {Object.entries(boardData.settings).map(([key, value]) => (
               <div key={key} className="flex items-center justify-between">
                 <Label htmlFor={key} className="text-sm text-gray-700 dark:text-white">

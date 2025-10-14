@@ -44,7 +44,7 @@ export default function RolesAdmin() {
         return;
       }
       await rolesAPI.create({
-        key: String(form.key).trim().toLowerCase(),
+        key: String(form.key).trim().toUpperCase(),  // ключи у нас uppercase в БД
         name: form.name,
         description: form.description || '',
       });
@@ -65,7 +65,7 @@ export default function RolesAdmin() {
   const submitEdit = async () => {
     try {
       await rolesAPI.update(current.id, {
-        key: String(form.key).trim().toLowerCase(),
+        key: String(form.key).trim().toUpperCase(),
         name: form.name,
         description: form.description || ''
       });
@@ -97,8 +97,8 @@ export default function RolesAdmin() {
   };
 
   return (
-    <div className="space-y-4 p-6">
-      <div className="flex items-center justify-between">
+    <div className="h-full min-h-0 flex flex-col p-6">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">Roles</h2>
           <p className="text-gray-600">Create roles and control board visibility by roles</p>
@@ -106,40 +106,65 @@ export default function RolesAdmin() {
         <Button onClick={startAdd}>Add Role</Button>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>All Roles</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="py-8 text-center text-gray-500">Loading…</div>
-          ) : items.length === 0 ? (
-            <div className="py-8 text-center text-gray-500">No roles yet</div>
-          ) : (
-            <div className="space-y-2">
-              {items.map(r => (
-                <div key={r.id} className="flex items-center justify-between border rounded p-3">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline">{r.key}</Badge>
-                      <span className="font-medium">{r.name}</span>
-                      {!r.isActive && <Badge className="bg-gray-200 text-gray-700">inactive</Badge>}
+      <div className="flex-1 min-h-0 overflow-y-auto mt-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>All Roles</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="py-8 text-center text-gray-500">Loading…</div>
+            ) : items.length === 0 ? (
+              <div className="py-8 text-center text-gray-500">No roles yet</div>
+            ) : (
+              <div className="space-y-2">
+                {items.map(r => {
+                  const isBuiltIn = !!r.builtIn;
+                  return (
+                    <div key={r.id} className="flex items-center justify-between border rounded p-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline">{r.key}</Badge>
+                          <span className="font-medium">{r.name}</span>
+                          {isBuiltIn && <Badge className="bg-indigo-100 text-indigo-800">built-in</Badge>}
+                          {!r.isActive && <Badge className="bg-gray-200 text-gray-700">inactive</Badge>}
+                        </div>
+                        {r.description && <div className="text-sm text-gray-600">{r.description}</div>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => toggleActive(r)}
+                          disabled={isBuiltIn}
+                          title={isBuiltIn ? 'Built-in role cannot be disabled' : 'Enable/Disable'}
+                        >
+                          {r.isActive ? 'Disable' : 'Enable'}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => startEdit(r)}
+                          disabled={isBuiltIn}
+                          title={isBuiltIn ? 'Built-in role cannot be edited' : 'Edit'}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          onClick={() => remove(r)}
+                          disabled={isBuiltIn}
+                          title={isBuiltIn ? 'Built-in role cannot be deleted' : 'Delete'}
+                        >
+                          Delete
+                        </Button>
+                      </div>
                     </div>
-                    {r.description && <div className="text-sm text-gray-600">{r.description}</div>}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" onClick={() => toggleActive(r)}>
-                      {r.isActive ? 'Disable' : 'Enable'}
-                    </Button>
-                    <Button variant="outline" onClick={() => startEdit(r)}>Edit</Button>
-                    <Button variant="destructive" onClick={() => remove(r)}>Delete</Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Add */}
       <Dialog open={openAdd} onOpenChange={setOpenAdd}>
@@ -149,8 +174,8 @@ export default function RolesAdmin() {
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <Label>Key (lowercase, unique)</Label>
-              <Input value={form.key} onChange={e => setForm({ ...form, key: e.target.value })} placeholder="e.g. qa" />
+              <Label>Key (UPPERCASE, unique)</Label>
+              <Input value={form.key} onChange={e => setForm({ ...form, key: e.target.value.toUpperCase() })} placeholder="e.g. QA" />
             </div>
             <div>
               <Label>Name</Label>
@@ -177,7 +202,7 @@ export default function RolesAdmin() {
           <div className="space-y-3">
             <div>
               <Label>Key</Label>
-              <Input value={form.key} onChange={e => setForm({ ...form, key: e.target.value })} />
+              <Input value={form.key} onChange={e => setForm({ ...form, key: e.target.value.toUpperCase() })} />
             </div>
             <div>
               <Label>Name</Label>
