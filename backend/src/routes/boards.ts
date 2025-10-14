@@ -59,23 +59,25 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
   if (!board) return null;
 
   const rawRoles = (user as any).effectiveRoles ?? user.roles ?? [];
-  const userRoles = canonList(rawRoles);
+  const userRoles = canonList(rawRoles);           // ['admin','tech',...]
   const userRoleSet = new Set(userRoles);
 
-  // Сначала проверка видимости по департаментам
+  // ✅ Админ видит всё, без учёта департаментов/ролей/членства
+  if (userRoleSet.has(Role.ADMIN)) return board;
+
+  // ⬇️ Остальные проверки — только для не-админа
+
+  // 1) Видимость по департаментам (пустой список у борда = видно всем)
   if (!hasDepartmentAccess((user as any).departments, (board as any).visibleDepartments)) {
     return null;
   }
 
-  // Админ видит всё (если прошёл департаменты)
-  if (userRoleSet.has(Role.ADMIN)) return board;
-
-  // Buyer — исторически имеет доступ к базовым
+  // 2) Исторический доступ buyer к базовым бордам
   if (userRoleSet.has(Role.BUYER) && ['BUY', 'TECH', 'DES'].includes(key)) {
     return board;
   }
 
-  // Доступ по ролям доски
+  // 3) Доступ по ролям борда (учитываем legacy allowed_roles)
   const boardRoles = canonList(
     (board as any).allowedRoles || (board as any).allowed_roles || []
   );
@@ -83,14 +85,15 @@ const checkBoardAccess = async (user: any, boardKey: string) => {
     if (userRoleSet.has(r)) return board;
   }
 
-  // Члены или владельцы
+  // 4) Член/владелец борда
   if (
-    (Array.isArray(board.members) && board.members.includes(user.id)) ||
-    (Array.isArray(board.owners) && board.owners.includes(user.id))
+    (Array.isArray((board as any).members) && (board as any).members.includes(user.id)) ||
+    (Array.isArray((board as any).owners) && (board as any).owners.includes(user.id))
   ) {
     return board;
   }
 
+  // 5) Ничего не подошло — нет доступа
   return null;
 };
 
@@ -101,32 +104,32 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     const rawRoles = (user as any).effectiveRoles ?? user.roles ?? [];
     const userRoles = canonList(rawRoles);
     const userDeps = (user as any).departments || [];
-    let query: any = {};
 
-    // Фильтр по департаментам борда: либо видим всем, либо пересечение
+    // ✅ Админ видит все борды, без деп-фильтра
+    if (userRoles.includes(Role.ADMIN)) {
+      const boards = await Board.find({}).sort({ createdAt: -1 });
+      res.json(boards);
+      return;
+    }
+
+    // Для не-админа — как было: пересечение департаментов И доступ по ролям/членству
     const depOr = [
       { $or: [{ visibleDepartments: { $exists: false } }, { visibleDepartments: { $size: 0 } }] },
       { visibleDepartments: { $in: upperList(userDeps) } },
     ];
 
-    if (!userRoles.includes(Role.ADMIN)) {
-      const or: any[] = [
-        { allowedRoles: { $in: userRoles } },
-        { allowed_roles: { $in: userRoles } }, // legacy
-        { members: user.id },
-        { owners: user.id },
-      ];
+    const or: any[] = [
+      { allowedRoles: { $in: userRoles } },
+      { allowed_roles: { $in: userRoles } }, // legacy
+      { members: user.id },
+      { owners: user.id },
+    ];
 
-      if (userRoles.includes(Role.BUYER)) {
-        or.push({ key: { $in: ['BUY', 'TECH', 'DES'] } });
-      }
-
-      query = { $and: [{ $or: or }, { $or: depOr }] };
-    } else {
-      // админ видит всё, но учитываем департаментную видимость
-      query = { $or: depOr };
+    if (userRoles.includes(Role.BUYER)) {
+      or.push({ key: { $in: ['BUY', 'TECH', 'DES'] } });
     }
 
+    const query = { $and: [{ $or: or }, { $or: depOr }] };
     const boards = await Board.find(query).sort({ createdAt: -1 });
     res.json(boards);
   } catch (e) {
