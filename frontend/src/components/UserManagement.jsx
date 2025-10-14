@@ -26,6 +26,13 @@ import { toast } from '../hooks/use-toast';
 import RoleSelect from './RoleSelect';
 import DepartmentSelect from './DepartmentSelect';
 
+// helpers для ролей
+const normRole = (v) => String(v ?? '').trim().toUpperCase();
+const pickPrimary = (arr) => {
+  const prio = ['ADMIN','TEAM_LEAD','TECH','DESIGNER','BUYER','OFFICE'];
+  return arr.find(r => prio.includes(r)) || arr[0] || '';
+};
+
 const UserManagement = () => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -38,8 +45,9 @@ const UserManagement = () => {
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
-    roles: [],
-    departments: [] // массив UPPERCASE ключей департаментов
+    roles: [],          // массив UPPERCASE ключей ролей
+    primaryRole: '',    // UPPERCASE ключ основной роли (для селекта)
+    departments: []     // массив UPPERCASE ключей департаментов
   });
 
   const [generatedPassword, setGeneratedPassword] = useState('');
@@ -49,12 +57,14 @@ const UserManagement = () => {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [resetPasswordMode, setResetPasswordMode] = useState(false);
 
-  // цвета бейджей ролей
+  // цвета бейджей ролей (визуал)
   const roleOptions = [
     { value: 'admin',    label: 'Admin',    color: 'bg-violet-100 text-violet-800' },
     { value: 'buyer',    label: 'Buyer',    color: 'bg-emerald-100 text-emerald-800' },
     { value: 'designer', label: 'Designer', color: 'bg-rose-100 text-rose-800' },
-    { value: 'tech',     label: 'Tech',     color: 'bg-blue-100 text-blue-800' }
+    { value: 'tech',     label: 'Tech',     color: 'bg-blue-100 text-blue-800' },
+    { value: 'team_lead',label: 'Team Lead',color: 'bg-amber-100 text-amber-800' },
+    { value: 'office',   label: 'Office',   color: 'bg-slate-100 text-slate-800' },
   ];
 
   const statusOptions = [
@@ -101,6 +111,7 @@ const UserManagement = () => {
       fullName: '',
       email: '',
       roles: [],
+      primaryRole: '',
       departments: [] // требуем выбрать в форме
     });
     setShowPassword(false);
@@ -109,15 +120,17 @@ const UserManagement = () => {
   };
 
   const handleEditUser = (user) => {
+    const rolesUp = Array.from(new Set((user.roles || []).map(normRole)));
     setSelectedUser(user);
     setFormData({
       fullName: user.full_name,
       email: user.email,
-      roles: user.roles || [],
+      roles: rolesUp,
+      primaryRole: pickPrimary(rolesUp),
       status: user.status,
       // бэк может отдавать как строки, так и объекты {key,name}
       departments: Array.isArray(user.departments)
-        ? user.departments.map(d => typeof d === 'string' ? d : (d?.key || d?.name || '')).filter(Boolean)
+        ? user.departments.map(d => typeof d === 'string' ? d : (d?.key || d?.name || '')).filter(Boolean).map(s => String(s).toUpperCase())
         : []
     });
     setNewPassword('');
@@ -163,7 +176,8 @@ const UserManagement = () => {
       await api.post('/users', {
         fullName: formData.fullName,
         email: formData.email,
-        roles: formData.roles,
+        roles: formData.roles.map(normRole),
+        primaryRole: normRole(formData.primaryRole || pickPrimary(formData.roles)),
         departments: formData.departments.map(d => String(d).toUpperCase()),
         password: generatedPassword,
         sendInvitation: false
@@ -188,7 +202,8 @@ const UserManagement = () => {
       const updateData = {
         fullName: formData.fullName,
         email: formData.email,
-        roles: formData.roles,
+        roles: formData.roles.map(normRole),
+        primaryRole: normRole(formData.primaryRole || pickPrimary(formData.roles)),
         status: formData.status,
         departments: (formData.departments || []).map(d => String(d).toUpperCase()),
       };
@@ -237,13 +252,15 @@ const UserManagement = () => {
     return (
       (user.full_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (user.email || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (user.roles || []).some(role => (role || '').toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (user.roles || []).some(role => (String(role || '')).toLowerCase().includes(searchTerm.toLowerCase())) ||
       dept.includes(searchTerm.toLowerCase())
     );
   });
 
   const getRoleBadgeColor = (role) => {
-    const roleOption = roleOptions.find(r => r.value === role);
+    // поддержка UPPERCASE/Lowercase
+    const r = (role || '').toString().toLowerCase();
+    const roleOption = roleOptions.find(opt => opt.value === r);
     return roleOption?.color || 'bg-gray-100 text-gray-800';
   };
 
@@ -454,7 +471,18 @@ const UserManagement = () => {
             <RoleSelect
               label="Roles *"
               value={formData.roles}
-              onChange={(roles) => setFormData({ ...formData, roles })}
+              primary={formData.primaryRole}
+              onChange={(next) => {
+                // поддерживаем и старый формат onChange(array), и новый {roles, primary}
+                if (Array.isArray(next)) {
+                  const roles = next.map(normRole);
+                  setFormData(fd => ({ ...fd, roles, primaryRole: pickPrimary(roles) }));
+                } else {
+                  const roles = (next.roles || []).map(normRole);
+                  const primaryRole = normRole(next.primary || pickPrimary(roles));
+                  setFormData(fd => ({ ...fd, roles, primaryRole }));
+                }
+              }}
               required
               placeholder="Select roles…"
             />
@@ -542,7 +570,17 @@ const UserManagement = () => {
             <RoleSelect
               label="Roles"
               value={formData.roles}
-              onChange={(roles) => setFormData({ ...formData, roles })}
+              primary={formData.primaryRole}
+              onChange={(next) => {
+                if (Array.isArray(next)) {
+                  const roles = next.map(normRole);
+                  setFormData(fd => ({ ...fd, roles, primaryRole: pickPrimary(roles) }));
+                } else {
+                  const roles = (next.roles || []).map(normRole);
+                  const primaryRole = normRole(next.primary || pickPrimary(roles));
+                  setFormData(fd => ({ ...fd, roles, primaryRole }));
+                }
+              }}
               placeholder="Select roles…"
             />
 

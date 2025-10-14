@@ -112,10 +112,6 @@ export default function DepartmentsAdmin() {
   return (
     <div className="h-full min-h-0 flex flex-col p-6">
       <div className="flex items-center justify-between gap-3 shrink-0">
-        <div className="flex-1">
-          <h2 className="text-xl font-semibold text-gray-900">Departments</h2>
-          <p className="text-gray-600">Create and manage departments. Keys are UPPERCASE.</p>
-        </div>
         <Button onClick={startAdd} className="shrink-0">
           <Plus className="w-4 h-4 mr-2" /> Add Department
         </Button>

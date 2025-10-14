@@ -13,10 +13,10 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-size: 13px; /* Reduced from default 16px */
-  transform: scale(0.85); /* Overall 15% smaller than 2/3 */
+  transform: scale(1); /* Overall 15% smaller than 2/3 */
   transform-origin: top left;
-  width: 117.65%; /* Compensate for scale */
-  height: 117.65%;
+  width: 100%; /* Compensate for scale */
+  height: 100%;
 }
 
 /* Dark theme */
@@ -68,7 +68,7 @@ body {
 
 .App {
   width: 100%;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 /* Custom scrollbar */

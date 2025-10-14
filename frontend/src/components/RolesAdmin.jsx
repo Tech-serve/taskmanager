@@ -99,10 +99,6 @@ export default function RolesAdmin() {
   return (
     <div className="h-full min-h-0 flex flex-col p-6">
       <div className="flex items-center justify-between shrink-0">
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Roles</h2>
-          <p className="text-gray-600">Create roles and control board visibility by roles</p>
-        </div>
         <Button onClick={startAdd}>Add Role</Button>
       </div>
 
