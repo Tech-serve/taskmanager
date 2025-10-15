@@ -61,6 +61,7 @@ const Login = ({ onLogin }) => {
     { email: 'tl2@gambling.local', password: 'LE3qVN1aFkL2', role: 'team_lead', departments: ['GAMBLING'] },
     { email: 'tl1@swip.local', password: 'l8Tm9eQRfp$b', role: 'team_lead', departments: ['SWIP'] },
     { email: 'tl2@swip.local', password: '6gStI9Oj#RqO', role: 'team_lead', departments: ['SWIP'] },
+     { email: 'affiliate@company.com', password: 'P3w4mjPcPJ6h', role: 'AFFILIATE', departments: ['GAMBLING'] },
   ];
 
   const deptColor = (departments = []) => {

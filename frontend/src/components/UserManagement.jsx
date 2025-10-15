@@ -17,7 +17,10 @@ import {
   EyeOff,
   AlertTriangle,
   Copy,
-  Check
+  Check,
+  ArrowUpDown,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { toast } from '../hooks/use-toast';
@@ -47,8 +50,16 @@ const UserManagement = () => {
     email: '',
     roles: [],          // массив UPPERCASE ключей ролей
     primaryRole: '',    // UPPERCASE ключ основной роли (для селекта)
-    departments: []     // массив UPPERCASE ключей департаментов
+    departments: []     // массив ключей/имён/объектов департаментов — маппим в ID при сабмите
   });
+
+  const [departmentsDict, setDepartmentsDict] = useState({
+    byId: new Map(),      // id -> {id,key,name}
+    byKey: new Map(),     // UPPERCASE(key|name) -> {id,key,name}
+  });
+
+  // сортировка
+  const [sort, setSort] = useState({ key: 'user', dir: 'asc' }); // keys: user|email|roles|departments|status
 
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -73,10 +84,7 @@ const UserManagement = () => {
     { value: 'pending',  label: 'Pending',  color: 'bg-yellow-100 text-yellow-800' }
   ];
 
-  useEffect(() => {
-    fetchUsers();
-  }, []);
-
+  // ===== data fetch =====
   const fetchUsers = async () => {
     try {
       setLoading(true);
@@ -94,6 +102,32 @@ const UserManagement = () => {
     }
   };
 
+  const fetchDepartments = async () => {
+    try {
+      const res = await api.get('/admin/departments'); 
+      const list = Array.isArray(res.data) ? res.data : [];
+      const byId = new Map();
+      const byKey = new Map();
+      for (const d of list) {
+        const id = String(d.id || '').trim();             
+        const key = String(d.key || d.name || '').trim(); 
+        if (!id || !key) continue;
+        byId.set(id.toLowerCase(), d);                     
+        byKey.set(key.toUpperCase(), d);                   
+        byKey.set((d.name || '').toLowerCase(), d);        
+      }
+      setDepartmentsDict({ byId, byKey });
+    } catch (e) {
+      console.warn('Failed to fetch departments', e);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+    fetchDepartments();
+  }, []);
+
+  // ===== helpers =====
   const generatePassword = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
     const length = 12;
@@ -104,6 +138,60 @@ const UserManagement = () => {
     return password;
   };
 
+  const FALLBACK_DEPT_KEY_TO_ID = {
+  GAMBLING: 'dept-gambling',
+  SWIP:     'dept-swip',
+  ADMINS:   'dept-admins',
+};
+
+const resolveDepartmentIds = (values) => {
+  const ids = [];
+  const unknown = [];
+  const arr = Array.isArray(values) ? values : [];
+
+  for (const v of arr) {
+    if (!v) continue;
+
+    // Объект из селекта
+    if (typeof v === 'object') {
+      const id  = String(v.id || '').trim();
+      const key = String(v.key || v.name || '').trim();
+      if (id)   { ids.push(id); continue; }
+      if (key) {
+        const byDict = departmentsDict.byKey.get(key.toUpperCase());
+        if (byDict?.id) { ids.push(byDict.id); continue; }
+        const fb = FALLBACK_DEPT_KEY_TO_ID[key];
+        if (fb) { ids.push(fb); continue; }
+      }
+      unknown.push(key || '[object]');
+      continue;
+    }
+
+    // Строка
+    const s = String(v).trim();
+
+    // Уже id?
+    if (/^dept-/i.test(s)) { ids.push(s.toLowerCase()); continue; }
+
+    // key/name -> id
+    const byDict = departmentsDict.byKey.get(s.toUpperCase());
+    if (byDict?.id) { ids.push(byDict.id); continue; }
+    const fb = FALLBACK_DEPT_KEY_TO_ID[s.toUpperCase()];
+    if (fb) { ids.push(fb); continue; }
+
+    unknown.push(s);
+  }
+
+  return { ids: Array.from(new Set(ids)), unknown };
+};
+
+  const // опционально — получить ключи из id (на бэк не обязательно)
+  keysFromIds = (ids) =>
+    ids
+      .map(i => departmentsDict.byId.get(String(i).toLowerCase())?.key)
+      .filter(Boolean)
+      .map(k => String(k).toUpperCase());
+
   const handleAddUser = () => {
     const password = generatePassword();
     setGeneratedPassword(password);
@@ -112,7 +200,7 @@ const UserManagement = () => {
       email: '',
       roles: [],
       primaryRole: '',
-      departments: [] // требуем выбрать в форме
+      departments: []
     });
     setShowPassword(false);
     setPasswordCopied(false);
@@ -128,9 +216,12 @@ const UserManagement = () => {
       roles: rolesUp,
       primaryRole: pickPrimary(rolesUp),
       status: user.status,
-      // бэк может отдавать как строки, так и объекты {key,name}
+      // в форме держим ключи/имена — так удобнее пользователю
       departments: Array.isArray(user.departments)
-        ? user.departments.map(d => typeof d === 'string' ? d : (d?.key || d?.name || '')).filter(Boolean).map(s => String(s).toUpperCase())
+        ? user.departments
+            .map(d => typeof d === 'string' ? d : (d?.key || d?.name || ''))
+            .filter(Boolean)
+            .map(s => String(s).toUpperCase())
         : []
     });
     setNewPassword('');
@@ -162,50 +253,67 @@ const UserManagement = () => {
     setShowNewPassword(true);
   };
 
-  const submitAddUser = async () => {
-    try {
-      if (!formData.fullName || !formData.email || formData.roles.length === 0) {
-        toast({ title: "Error", description: "Please fill in all required fields.", variant: "destructive" });
-        return;
-      }
-      if (!Array.isArray(formData.departments) || formData.departments.length === 0) {
-        toast({ title: "Error", description: "Choose at least one department.", variant: "destructive" });
-        return;
-      }
+const submitAddUser = async () => {
+  try {
+    const roles = (formData.roles || []).map(normRole);
+    const depKeys = Array.from(
+      new Set((formData.departments || []).map(d => String(d).trim().toUpperCase()).filter(Boolean))
+    );
 
-      await api.post('/users', {
-        fullName: formData.fullName,
-        email: formData.email,
-        roles: formData.roles.map(normRole),
-        primaryRole: normRole(formData.primaryRole || pickPrimary(formData.roles)),
-        departments: formData.departments.map(d => String(d).toUpperCase()),
-        password: generatedPassword,
-        sendInvitation: false
-      });
-
-      toast({ title: "Success", description: "User created successfully!" });
-      setShowAddDialog(false);
-      fetchUsers();
-    } catch (error) {
-      console.error('Failed to create user:', error);
-      toast({
-        title: "Error",
-        description: error.response?.data?.error || "Failed to create user. Please try again.",
-        variant: "destructive",
-      });
+    if (!formData.fullName || !formData.email || roles.length === 0) {
+      toast({ title: "Ошибка", description: "Заполни имя, email и роли.", variant: "destructive" });
+      return;
     }
-  };
+    if (depKeys.length === 0) {
+      toast({ title: "Ошибка", description: "Выбери как минимум один департамент.", variant: "destructive" });
+      return;
+    }
+
+    const payload = {
+      fullName: formData.fullName,
+      email: String(formData.email).trim().toLowerCase(),
+      roles,                     // бэк нормализует в lower_snake
+      departments: depKeys,      // ВАЖНО: массив UPPERCASE ключей
+      password: generatedPassword,
+      sendInvitation: false
+    };
+
+    console.log('[createUser] payload →', payload);
+    await api.post('/users', payload);
+
+    toast({ title: "Готово", description: "Пользователь создан!" });
+    setShowAddDialog(false);
+    fetchUsers();
+  } catch (error) {
+    const msg = error?.response?.data?.error || error?.message || "Failed to create user";
+    console.error('Failed to create user:', error?.response?.data || error);
+    toast({ title: "Ошибка создания", description: msg, variant: "destructive" });
+  }
+};
 
   const submitEditUser = async () => {
     try {
       if (!selectedUser) return;
+
+      const { ids: deptIds, unknown } = resolveDepartmentIds(formData.departments);
+      if (unknown.length) {
+        toast({
+          title: "Unknown departments",
+          description: `These departments don't exist: ${unknown.join(', ')}`,
+          variant: "destructive",
+        });
+        return;
+      }
+
       const updateData = {
         fullName: formData.fullName,
         email: formData.email,
         roles: formData.roles.map(normRole),
         primaryRole: normRole(formData.primaryRole || pickPrimary(formData.roles)),
         status: formData.status,
-        departments: (formData.departments || []).map(d => String(d).toUpperCase()),
+        // 🔑 отправляем ID
+        departments: deptIds,
+        departmentKeys: keysFromIds(deptIds),
       };
 
       if (resetPasswordMode && newPassword) {
@@ -221,7 +329,7 @@ const UserManagement = () => {
       console.error('Failed to update user:', error);
       toast({
         title: "Error",
-        description: error.response?.data?.error || "Failed to update user. Please try again.",
+        description: error?.response?.data?.error || "Failed to update user. Please try again.",
         variant: "destructive",
       });
     }
@@ -245,6 +353,7 @@ const UserManagement = () => {
     }
   };
 
+  // фильтрация
   const filteredUsers = users.filter(user => {
     const dept = Array.isArray(user.departments)
       ? user.departments.map(d => (typeof d === 'string' ? d : (d?.name || d?.key || ''))).join(' ').toLowerCase()
@@ -257,8 +366,59 @@ const UserManagement = () => {
     );
   });
 
+  // сортировка
+  const getSortValue = (user, key) => {
+    switch (key) {
+      case 'user':
+        return String(user.full_name || '').toLowerCase();
+      case 'email':
+        return String(user.email || '').toLowerCase();
+      case 'roles': {
+        const arr = (user.roles || []).map(r => String(r).toLowerCase());
+        return arr.join(', ');
+      }
+      case 'departments': {
+        const arr = Array.isArray(user.departments)
+          ? user.departments.map(d => (typeof d === 'string' ? d : (d?.name || d?.key || '')))
+          : [];
+        return arr.join(', ').toLowerCase();
+      }
+      case 'status':
+        return String(user.status || '').toLowerCase();
+      default:
+        return '';
+    }
+  };
+
+  const sortedUsers = [...filteredUsers].sort((a, b) => {
+    const va = getSortValue(a, sort.key);
+    const vb = getSortValue(b, sort.key);
+    const cmp = va.localeCompare(vb, undefined, { sensitivity: 'base' });
+    return sort.dir === 'asc' ? cmp : -cmp;
+  });
+
+  const requestSort = (key) => {
+    setSort(prev => (prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
+  };
+
+  const SortButton = ({ columnKey, children }) => {
+    const active = sort.key === columnKey;
+    const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ChevronUp : ChevronDown;
+    return (
+      <button
+        type="button"
+        onClick={() => requestSort(columnKey)}
+        className={`inline-flex items-center gap-1 group ${
+          active ? 'text-indigo-700' : 'text-gray-900'
+        }`}
+      >
+        {children}
+        <Icon className={`w-4 h-4 ${active ? '' : 'text-gray-400 group-hover:text-gray-600'}`} />
+      </button>
+    );
+  };
+
   const getRoleBadgeColor = (role) => {
-    // поддержка UPPERCASE/Lowercase
     const r = (role || '').toString().toLowerCase();
     const roleOption = roleOptions.find(opt => opt.value === r);
     return roleOption?.color || 'bg-gray-100 text-gray-800';
@@ -335,16 +495,26 @@ const UserManagement = () => {
               <table className="w-full">
                 <thead className="bg-gray-50 border-b">
                   <tr>
-                    <th className="text-left p-4 font-semibold text-gray-900">User</th>
-                    <th className="text-left p-4 font-semibold text-gray-900">Email</th>
-                    <th className="text-left p-4 font-semibold text-gray-900">Roles</th>
-                    <th className="text-left p-4 font-semibold text-gray-900">Departments</th>
-                    <th className="text-left p-4 font-semibold text-gray-900">Status</th>
+                    <th className="text-left p-4 font-semibold">
+                      <SortButton columnKey="user">User</SortButton>
+                    </th>
+                    <th className="text-left p-4 font-semibold">
+                      <SortButton columnKey="email">Email</SortButton>
+                    </th>
+                    <th className="text-left p-4 font-semibold">
+                      <SortButton columnKey="roles">Roles</SortButton>
+                    </th>
+                    <th className="text-left p-4 font-semibold">
+                      <SortButton columnKey="departments">Departments</SortButton>
+                    </th>
+                    <th className="text-left p-4 font-semibold">
+                      <SortButton columnKey="status">Status</SortButton>
+                    </th>
                     <th className="text-left p-4 font-semibold text-gray-900">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredUsers.map((user) => (
+                  {sortedUsers.map((user) => (
                     <tr key={user.id} className="border-b hover:bg-gray-50 transition-colors">
                       {/* User Column */}
                       <td className="p-4">
@@ -426,7 +596,7 @@ const UserManagement = () => {
           </CardContent>
         </Card>
 
-        {filteredUsers.length === 0 && (
+        {sortedUsers.length === 0 && (
           <Card className="mt-6">
             <CardContent className="p-8 text-center">
               <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
@@ -473,7 +643,6 @@ const UserManagement = () => {
               value={formData.roles}
               primary={formData.primaryRole}
               onChange={(next) => {
-                // поддерживаем и старый формат onChange(array), и новый {roles, primary}
                 if (Array.isArray(next)) {
                   const roles = next.map(normRole);
                   setFormData(fd => ({ ...fd, roles, primaryRole: pickPrimary(roles) }));
