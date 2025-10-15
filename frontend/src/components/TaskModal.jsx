@@ -1,4 +1,3 @@
-// src/components/TaskModal.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
@@ -8,25 +7,23 @@ import { Badge } from './ui/badge';
 import { Label } from './ui/label';
 import { Card, CardContent } from './ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { EXPENSE_CATEGORIES, getCategoryDisplayName } from './CategorySelector';
+import {
+  EXPENSE_CATEGORIES,
+  MAIN_KEYS,
+  getSubcategories,
+  getMainDisplayName,
+  getSubDisplayName,
+  getCategoryDisplayName,
+  parseCategoryValue,
+  buildCategoryValue,
+} from './CategorySelector';
 import { Calendar, User, Clock, MessageSquare, Send } from 'lucide-react';
-import { tasksAPI } from '../lib/api';
+import { tasksAPI, expensesAPI } from '../lib/api';
 import { toast } from 'sonner';
 
-// служебные значения (Select не любит пустые строки)
 const UNASSIGNED = 'unassigned';
 const UNCATEGORIZED = 'uncategorized';
 
-/**
- * Пропсы:
- * - task: объект в snake_case (если есть id — режим редактирования, иначе создание)
- * - isOpen, onClose
- * - users: [{id, full_name,...}]
- * - onTaskUpdate: () => void  // перезагрузка данных снаружи
- * - boardType: 'tasks' | 'expenses'
- * - defaultBoardKey?: string   // для создания
- * - defaultColumnId?: string   // для создания
- */
 const TaskModal = ({
   task,
   isOpen,
@@ -37,25 +34,26 @@ const TaskModal = ({
   defaultBoardKey,
   defaultColumnId,
 }) => {
-  // Важно: мемоизируем, чтобы в режиме создания {} не создавался заново на каждом рендере
   const safeTask = useMemo(() => task || {}, [task]);
   const isEdit = Boolean(safeTask.id);
 
   const [saving, setSaving] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
-  const [newComment, setNewComment] = useState(''); // и при создании можно сразу написать
+  const [newComment, setNewComment] = useState('');
+  const [amountError, setAmountError] = useState('');
 
-  // дефолтная форма
   const emptyForm = useMemo(
     () => ({
       title: '',
       description: '',
       priority: 'medium',
-      assignee_id: null,          // null => UNASSIGNED в UI
-      due_date: '',               // YYYY-MM-DD
+      assignee_id: null,
+      due_date: '',
       tags: [],
-      amount: undefined,          // только для expenses
-      category: undefined,        // только для expenses
+      amount: undefined,
+      category: undefined,
+      wallet_number: '',
+      tx_hash_url: '',
       board_key: defaultBoardKey || '',
       column_id: defaultColumnId || '',
     }),
@@ -64,9 +62,13 @@ const TaskModal = ({
 
   const [form, setForm] = useState(emptyForm);
 
-  // синхронизация формы при открытии/смене задачи
+  // локальные значения двойного селектора
+  const [mainCat, setMainCat] = useState(null);
+  const [subCat, setSubCat] = useState(null);
+
   useEffect(() => {
     if (isEdit) {
+      const parsed = parseCategoryValue(safeTask.category);
       setForm({
         title: safeTask.title || '',
         description: safeTask.description || '',
@@ -74,18 +76,25 @@ const TaskModal = ({
         assignee_id: safeTask.assignee_id ?? null,
         due_date: safeTask.due_date ? new Date(safeTask.due_date).toISOString().slice(0, 10) : '',
         tags: Array.isArray(safeTask.tags) ? safeTask.tags : [],
-        amount: typeof safeTask.amount === 'number' ? safeTask.amount : undefined,
+        amount: typeof safeTask.amount === 'number' ? safeTask.amount : (safeTask.amount ?? undefined),
         category: safeTask.category ?? undefined,
+        wallet_number: safeTask.wallet_number || '',
+        tx_hash_url: safeTask.tx_hash_url || '',
         board_key: safeTask.board_key || '',
         column_id: safeTask.column_id || '',
       });
-      setNewComment(''); // новое открытие — пустим поле комментария
+      setMainCat(parsed.main);
+      setSubCat(parsed.sub);
+      setNewComment('');
+      setAmountError('');
     } else {
       setForm(emptyForm);
-      setNewComment(''); // при создании тоже можно сразу написать
+      setMainCat(null);
+      setSubCat(null);
+      setNewComment('');
+      setAmountError('');
     }
-    // Важно: завязываемся на task (а не на "сырой" объект {}), чтобы не было бесконечных ресетов
-  }, [isOpen, isEdit, task, emptyForm]);
+  }, [isOpen, isEdit, task, emptyForm, safeTask]);
 
   const setField = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
@@ -118,7 +127,18 @@ const TaskModal = ({
     return colors[priority] || 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
   };
 
-  // создание/сохранение
+  const validateAmount = () => {
+    if (boardType !== 'expenses') return true;
+    const num = Number(form.amount);
+    if (!Number.isFinite(num) || num <= 0) {
+      setAmountError('Amount is required');
+      toast.error('Amount is required');
+      return false;
+    }
+    setAmountError('');
+    return true;
+  };
+
   const handleSave = async () => {
     if (!form.title.trim()) {
       toast.error('Title is required');
@@ -128,11 +148,15 @@ const TaskModal = ({
       if (!form.board_key) return toast.error('board_key is required for creating a task');
       if (!form.column_id) return toast.error('column_id is required for creating a task');
     }
+    if (!validateAmount()) return;
+
+    const categoryValue = buildCategoryValue(mainCat, subCat);
+    const isExpenses = boardType === 'expenses';
+    const apiForBoard = isExpenses ? expensesAPI : tasksAPI;
 
     setSaving(true);
     try {
       if (isEdit) {
-        // PATCH
         const payload = {
           title: form.title,
           description: form.description || undefined,
@@ -141,21 +165,28 @@ const TaskModal = ({
           due_date: form.due_date || undefined,
           tags: form.tags || [],
         };
-        if (boardType === 'expenses') {
-          payload.amount = form.amount === '' ? undefined : Number(form.amount ?? 0);
-          payload.category = form.category || undefined;
+        if (isExpenses) {
+          payload.amount = Number(form.amount);
+          payload.category = categoryValue || undefined;
+          payload.wallet_number = form.wallet_number || undefined;
+          payload.tx_hash_url = form.tx_hash_url || undefined;
         }
-        await tasksAPI.update(safeTask.id, payload);
+        await apiForBoard.update(safeTask.id, payload);
 
-        // при редактировании, если введён новый комментарий — отправим
         if (newComment.trim()) {
-          await tasksAPI.addComment(safeTask.id, { text: newComment.trim() });
+          if (apiForBoard.addComment) {
+            await apiForBoard.addComment(safeTask.id, { text: newComment.trim() });
+          } else {
+            await tasksAPI.addComment(safeTask.id, { text: newComment.trim() });
+          }
           setNewComment('');
         }
-
         toast.success('Task updated');
+
+        if (payload.tx_hash_url && /^https?:\/\//i.test(payload.tx_hash_url)) {
+          window.open(payload.tx_hash_url, '_blank', 'noopener,noreferrer');
+        }
       } else {
-        // POST
         const payload = {
           board_key: String(form.board_key).toUpperCase(),
           column_id: form.column_id,
@@ -166,19 +197,29 @@ const TaskModal = ({
           due_date: form.due_date || undefined,
           tags: form.tags || [],
         };
-        if (boardType === 'expenses') {
-          payload.amount = form.amount === '' ? undefined : Number(form.amount ?? 0);
-          payload.category = form.category || undefined;
+        if (isExpenses) {
+          payload.amount = Number(form.amount);
+          payload.category = categoryValue || undefined;
+          payload.wallet_number = form.wallet_number || undefined;
+          payload.tx_hash_url = form.tx_hash_url || undefined;
         }
 
-        const res = await tasksAPI.create(payload); // { data: createdTask (snake_case) }
+        const res = await apiForBoard.create(payload);
         const created = res?.data;
-        // если при создании написали комментарий — сразу добросим
+
         if (created?.id && newComment.trim()) {
-          await tasksAPI.addComment(created.id, { text: newComment.trim() });
+          if (apiForBoard.addComment) {
+            await apiForBoard.addComment(created.id, { text: newComment.trim() });
+          } else {
+            await tasksAPI.addComment(created.id, { text: newComment.trim() });
+          }
           setNewComment('');
         }
         toast.success('Task created');
+
+        if (payload.tx_hash_url && /^https?:\/\//i.test(payload.tx_hash_url)) {
+          window.open(payload.tx_hash_url, '_blank', 'noopener,noreferrer');
+        }
       }
 
       onTaskUpdate && onTaskUpdate();
@@ -192,17 +233,16 @@ const TaskModal = ({
     }
   };
 
-  // добавить комментарий в режиме редактирования (кнопка-«самолётик»)
   const handleAddComment = async () => {
     if (!newComment.trim()) return;
     if (!isEdit) {
-      // в создании комментарий отправится в handleSave
       toast.error('Comment will be added after you create the task');
       return;
     }
     try {
       setSubmittingComment(true);
-      await tasksAPI.addComment(safeTask.id, { text: newComment.trim() });
+      await expensesAPI.addComment?.(safeTask.id, { text: newComment.trim() })
+        ?? tasksAPI.addComment(safeTask.id, { text: newComment.trim() });
       setNewComment('');
       toast.success('Comment added');
       onTaskUpdate && onTaskUpdate();
@@ -216,7 +256,7 @@ const TaskModal = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto bg-white dark:bg-gray-600 border dark:border-gray-400">
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto bg-white dark:bg-gray-600 border dark:border-gray-400" aria-describedby="task-modal-desc">
         <DialogHeader>
           <DialogTitle className="text-gray-900 dark:text-white flex items-center justify-between">
             <span>{isEdit ? 'Edit Task' : 'Create Task'}</span>
@@ -230,6 +270,8 @@ const TaskModal = ({
             </div>
           </DialogTitle>
         </DialogHeader>
+
+        <p id="task-modal-desc" className="sr-only">Create or edit task/expense</p>
 
         <div className="space-y-6">
           {/* Основные поля */}
@@ -255,7 +297,6 @@ const TaskModal = ({
               />
             </div>
 
-            {/* только при создании (если не пришли параметры извне) */}
             {!isEdit && !defaultBoardKey && (
               <div>
                 <Label className="text-gray-700 dark:text-white font-medium">Board key</Label>
@@ -332,58 +373,116 @@ const TaskModal = ({
             {/* Блок расходов */}
             {boardType === 'expenses' && (
               <>
+                {/* Amount (REQUIRED, USD) */}
                 <div>
-                  <Label className="text-gray-700 dark:text-white font-medium">Amount</Label>
+                  <Label className="text-gray-700 dark:text-white font-medium">Amount (USD) *</Label>
                   <Input
                     type="number"
                     inputMode="decimal"
+                    min="0"
                     value={form.amount ?? ''}
-                    onChange={(e) => setField('amount', e.target.value)}
+                    onChange={(e) => {
+                      setField('amount', e.target.value);
+                      if (amountError) setAmountError('');
+                    }}
                     placeholder="0"
+                    className={`mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white
+                      ${amountError ? 'border-red-500 ring-2 ring-red-200' : ''}
+                    `}
+                    aria-invalid={!!amountError}
+                  />
+                  {amountError && (
+                    <p className="mt-1 text-xs text-red-600">{amountError}</p>
+                  )}
+                </div>
+
+                {/* Двойной селектор: MAIN и SUB рядом */}
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {/* MAIN */}
+                  <div>
+                    <Label className="text-gray-700 dark:text-white font-medium">Category (Main)</Label>
+                    <Select
+                      value={mainCat || UNCATEGORIZED}
+                      onValueChange={(v) => {
+                        const nextMain = v === UNCATEGORIZED ? null : v;
+                        setMainCat(nextMain);
+                        setSubCat(null);
+                      }}
+                    >
+                      <SelectTrigger className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white">
+                        <SelectValue placeholder="Select main category" />
+                      </SelectTrigger>
+                      <SelectContent className="dark:bg-gray-700 dark:border-gray-600">
+                        <SelectItem value={UNCATEGORIZED}>No category</SelectItem>
+                        {MAIN_KEYS.map((k) => (
+                          <SelectItem key={k} value={k}>
+                            {getMainDisplayName(k)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* SUB */}
+                  <div>
+                    <Label className="text-gray-700 dark:text-white font-medium">Category (Sub)</Label>
+                    <Select
+                      value={subCat || UNCATEGORIZED}
+                      onValueChange={(v) => setSubCat(v === UNCATEGORIZED ? null : v)}
+                      disabled={!mainCat}
+                    >
+                      <SelectTrigger className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white disabled:opacity-60">
+                        <SelectValue placeholder={mainCat ? 'Select subcategory' : 'Select main first'} />
+                      </SelectTrigger>
+                      <SelectContent className="dark:bg-gray-700 dark:border-gray-600">
+                        <SelectItem value={UNCATEGORIZED}>No subcategory</SelectItem>
+                        {mainCat &&
+                          getSubcategories(mainCat).map((s) => (
+                            <SelectItem key={s} value={s}>
+                              {getSubDisplayName(mainCat, s)}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {/* Превью полного имени */}
+                <div>
+                  {mainCat && (
+                    <p className="text-xs text-gray-600 dark:text-gray-300 mt-1">
+                      {getCategoryDisplayName(buildCategoryValue(mainCat, subCat))}
+                    </p>
+                  )}
+                </div>
+
+                {/* Wallet number — NEW */}
+                <div>
+                  <Label className="text-gray-700 dark:text-white font-medium">Wallet number</Label>
+                  <Input
+                    value={form.wallet_number}
+                    onChange={(e) => setField('wallet_number', e.target.value)}
+                    placeholder="e.g. USDT-TRC20 wallet"
                     className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white"
                   />
                 </div>
 
+                {/* Tx hash link — NEW */}
                 <div>
-                  <Label className="text-gray-700 dark:text-white font-medium">Category</Label>
-                  <Select
-                    value={form.category ?? UNCATEGORIZED}
-                    onValueChange={(v) => setField('category', v === UNCATEGORIZED ? undefined : v)}
-                  >
-                    <SelectTrigger className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white">
-                      <SelectValue placeholder="Select category" />
-                    </SelectTrigger>
-                    <SelectContent className="dark:bg-gray-700 dark:border-gray-600">
-                      <SelectItem value={UNCATEGORIZED}>No category</SelectItem>
-                      {Object.entries(EXPENSE_CATEGORIES).map(([mainKey, main]) => (
-                        <React.Fragment key={mainKey}>
-                          {(!main.subcategories || !Object.keys(main.subcategories).length) && (
-                            <SelectItem value={mainKey}>{main.name}</SelectItem>
-                          )}
-                          {main.subcategories &&
-                            Object.entries(main.subcategories).map(([subKey, subName]) => {
-                              const val = `${mainKey}.${subKey}`;
-                              return (
-                                <SelectItem key={val} value={val}>
-                                  {main.name} / {subName}
-                                </SelectItem>
-                              );
-                            })}
-                        </React.Fragment>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {form.category && (
-                    <p className="text-xs text-gray-600 dark:text-gray-300 mt-1">
-                      {getCategoryDisplayName(form.category)}
-                    </p>
-                  )}
+                  <Label className="text-gray-700 dark:text-white font-medium">Tx hash link</Label>
+                  <Input
+                    type="url"
+                    value={form.tx_hash_url}
+                    onChange={(e) => setField('tx_hash_url', e.target.value)}
+                    placeholder="https://explorer/tx/..."
+                    className="mt-1 dark:bg-gray-400 dark:border-gray-300 dark:text-white"
+                  />
                 </div>
               </>
             )}
           </div>
 
-          {/* Метаданные */}
+          {/* Метаданные и Комментарии */}
           {isEdit && (
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -391,7 +490,7 @@ const TaskModal = ({
                   <User className="w-4 h-4 mr-1" /> Creator
                 </Label>
                 <p className="text-gray-900 dark:text-gray-200 mt-1">
-                  {creatorUser?.full_name || creatorUser?.fullName || 'Unknown'}
+                  {(users.find(u => u.id === safeTask.creator_id)?.full_name) || 'Unknown'}
                 </p>
               </div>
 
@@ -430,26 +529,24 @@ const TaskModal = ({
             </div>
           )}
 
-          {/* Комментарии (одно поле — работает и в создании, и в редактировании) */}
           <div>
             <Label className="text-gray-700 dark:text-white font-medium flex items-center mb-3">
               <MessageSquare className="w-4 h-4 mr-1" />
-              Comments ({comments.length})
+              Comments ({(Array.isArray(safeTask.comments) ? safeTask.comments.length : 0)})
             </Label>
 
-            {/* Список текущих комментариев (только в режиме редактирования) */}
             {isEdit && (
               <div className="space-y-3 mb-4 max-h-60 overflow-y-auto">
-                {comments.length > 0 ? (
-                  comments.map((comment) => (
+                {Array.isArray(safeTask.comments) && safeTask.comments.length > 0 ? (
+                  safeTask.comments.map((comment) => (
                     <Card key={comment.id} className="dark:bg-gray-500 dark:border-gray-400">
                       <CardContent className="p-3">
                         <div className="flex items-start justify-between mb-2">
                           <span className="font-medium text-gray-900 dark:text-white text-sm">
-                            {comment.authorName}
+                            {comment.author_name || comment.authorName || 'User'}
                           </span>
                           <span className="text-xs text-gray-500 dark:text-gray-300">
-                            {comment.createdAt ? new Date(comment.createdAt).toLocaleString() : ''}
+                            {comment.created_at ? new Date(comment.created_at).toLocaleString() : ''}
                           </span>
                         </div>
                         <p className="text-gray-900 dark:text-gray-200 text-sm">{comment.text}</p>
@@ -462,7 +559,6 @@ const TaskModal = ({
               </div>
             )}
 
-            {/* Поле добавления — активное всегда (в создании уйдёт вместе с сохранением) */}
             <div className="flex space-x-2">
               <Textarea
                 value={newComment}
@@ -484,7 +580,6 @@ const TaskModal = ({
         </div>
 
         <div className="flex justify-between pt-4 border-t dark:border-gray-400">
-          {/* Техинфо */}
           <div className="text-xs text-gray-600 dark:text-gray-300">
             {isEdit ? (
               <>

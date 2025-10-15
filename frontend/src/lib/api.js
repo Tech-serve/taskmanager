@@ -4,25 +4,29 @@ import axios from 'axios';
  * UI ↔ API адаптеры и безопасные обёртки
  */
 
-// → к бэку (snake → camel) для Task
+// → к бэку (snake → camel) для Task/Expense
 const toBackendTask = (data = {}) => {
   const out = { ...data };
-  if ('board_key'   in out) { out.boardKey   = out.board_key;   delete out.board_key; }
-  if ('column_id'   in out) { out.columnId   = out.column_id;   delete out.column_id; }
-  if ('assignee_id' in out) { out.assigneeId = out.assignee_id; delete out.assignee_id; }
-  if ('due_date'    in out) { out.dueDate    = out.due_date;    delete out.due_date; }
-  if ('receipt_url' in out) { out.receiptUrl = out.receipt_url; delete out.receipt_url; }
+  if ('board_key'    in out) { out.boardKey    = out.board_key;    delete out.board_key; }
+  if ('column_id'    in out) { out.columnId    = out.column_id;    delete out.column_id; }
+  if ('assignee_id'  in out) { out.assigneeId  = out.assignee_id;  delete out.assignee_id; }
+  if ('due_date'     in out) { out.dueDate     = out.due_date;     delete out.due_date; }
+  if ('receipt_url'  in out) { out.receiptUrl  = out.receipt_url;  delete out.receipt_url; }
+  if ('wallet_number'in out) { out.walletNumber= out.wallet_number;delete out.wallet_number; }
+  if ('tx_hash_url'  in out) { out.txHashUrl   = out.tx_hash_url;  delete out.tx_hash_url; }
   return out;
 };
 
-// ← из бэка (camel → snake) для Task
+// ← из бэка (camel → snake) для Task/Expense
 const fromBackendTask = (t = {}) => {
   const out = { ...t };
-  if ('boardKey'  in out) { out.board_key   = out.boardKey;   delete out.boardKey; }
-  if ('columnId'  in out) { out.column_id   = out.columnId;   delete out.columnId; }
-  if ('assigneeId'in out) { out.assignee_id = out.assigneeId; delete out.assigneeId; }
-  if ('dueDate'   in out) { out.due_date    = out.dueDate;    delete out.dueDate; }
-  if ('receiptUrl'in out) { out.receipt_url = out.receiptUrl; delete out.receiptUrl; }
+  if ('boardKey'     in out) { out.board_key     = out.boardKey;     delete out.boardKey; }
+  if ('columnId'     in out) { out.column_id     = out.columnId;     delete out.columnId; }
+  if ('assigneeId'   in out) { out.assignee_id   = out.assigneeId;   delete out.assigneeId; }
+  if ('dueDate'      in out) { out.due_date      = out.dueDate;      delete out.dueDate; }
+  if ('receiptUrl'   in out) { out.receipt_url   = out.receiptUrl;   delete out.receiptUrl; }
+  if ('walletNumber' in out) { out.wallet_number = out.walletNumber; delete out.walletNumber; }
+  if ('txHashUrl'    in out) { out.tx_hash_url   = out.txHashUrl;    delete out.txHashUrl; }
   return out;
 };
 
@@ -66,7 +70,6 @@ const withEffectiveRoles = (userLike) => {
   const real = canonRoles(userLike.roles || []);
   const extra = canonRoles(userLike.effective_roles || []);
   const effective = Array.from(new Set([...real, ...extra]));
-  // департаменты — приводим к UPPERCASE массиву
   const departments = upperList(userLike.departments || userLike.department || []);
   return { ...userLike, roles: real, effective_roles: effective, departments };
 };
@@ -109,7 +112,7 @@ api.interceptors.response.use(
   }
 );
 
-// ===== helpers для Tasks-ответов =====
+// ===== helpers для ответов Tasks/Expenses =====
 const mapTasksArrayFromBackend = (res) => {
   if (Array.isArray(res.data)) {
     res.data = res.data.map(fromBackendTask);
@@ -125,7 +128,7 @@ const mapTaskFromBackend = (res) => {
   return res;
 };
 
-// ===== helpers для User-ответов (везде гарантируем effective_roles, departments[]) =====
+// ===== helpers для User-ответов =====
 const mapUserFromAuthLogin = (res) => {
   if (res?.data?.user) {
     if (res.data.access_token) {
@@ -135,14 +138,12 @@ const mapUserFromAuthLogin = (res) => {
   }
   return res;
 };
-
 const mapUserFromAuthMe = (res) => {
   if (res?.data && typeof res.data === 'object') {
     res.data = withEffectiveRoles(res.data);
   }
   return res;
 };
-
 const mapUsersArray = (res) => {
   if (Array.isArray(res?.data)) {
     res.data = res.data.map(withEffectiveRoles);
@@ -239,9 +240,49 @@ export const tasksAPI = {
   addComment: (taskId, commentData) => api.post(`/tasks/${taskId}/comments`, commentData),
 
   getMyTasks: async () => {
-    const res = await api.get('/tasks/me/tasks');;
+    const res = await api.get('/tasks/me/tasks');
     return mapTasksArrayFromBackend(res);
   },
+};
+
+// ---------- Expenses (расходы) ----------
+export const expensesAPI = {
+  // список с любыми фильтрами
+  list: async (params = {}) => {
+    const res = await api.get('/expenses', { params });
+    return mapTasksArrayFromBackend(res);
+  },
+
+  // получить список по ключу доски (бэку нужен boardKey — camelCase)
+  getByBoard: async (boardKey, params = {}) => {
+    const merged = { ...params, boardKey: String(boardKey).toUpperCase() };
+    const res = await api.get('/expenses', { params: merged });
+    return mapTasksArrayFromBackend(res);
+  },
+
+  get: async (id) => {
+    const res = await api.get(`/expenses/${id}`);
+    return mapTaskFromBackend(res);
+  },
+
+  create: async (data = {}) => {
+    if (!data.board_key) throw new Error('expensesAPI.create: board_key is required');
+    if (!data.column_id) throw new Error('expensesAPI.create: column_id is required');
+    if (!data.title)     throw new Error('expensesAPI.create: title is required');
+
+    const payload = toBackendTask({ ...data, board_key: String(data.board_key).toUpperCase() });
+    const res = await api.post('/expenses', payload);
+    return mapTaskFromBackend(res);
+  },
+
+  update: async (id, data = {}) => {
+    const res = await api.patch(`/expenses/${id}`, toBackendTask(data));
+    return mapTaskFromBackend(res);
+  },
+
+  addComment: (id, payload) => api.post(`/expenses/${id}/comments`, payload),
+
+  remove: (id) => api.delete(`/expenses/${id}`),
 };
 
 // ---------- Users ----------
@@ -265,7 +306,7 @@ export const usersAPI = {
   },
 };
 
-// ---------- Roles (Admin) ----------
+// ---------- Roles / Departments ----------
 export const rolesAPI = {
   list:   () => api.get('/admin/roles'),
   create: (data) => api.post('/admin/roles', data),

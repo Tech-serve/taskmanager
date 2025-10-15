@@ -52,7 +52,7 @@ const splitCategory = (raw) => {
   return { main: cat, sub: null };
 };
 
-const formatRub = (n) => `₽${(Number(n) || 0).toLocaleString('ru-RU')}`;
+const formatRub = (n) => `$${(Number(n) || 0).toLocaleString('us-US')}`;
 
 // ================= COMPONENT =================
 const ExpensesDashboard = ({ user }) => {

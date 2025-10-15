@@ -21,7 +21,8 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { boardsAPI, columnsAPI, tasksAPI, usersAPI } from '../lib/api';
+// 🔧 добавил expensesAPI
+import { boardsAPI, columnsAPI, tasksAPI, usersAPI, expensesAPI } from '../lib/api';
 import { toast } from 'sonner';
 import { 
   Plus, 
@@ -36,7 +37,7 @@ import {
   Edit
 } from 'lucide-react';
 import BoardSettings from './BoardSettings';
-import CategorySelector, { getCategoryDisplayName } from './CategorySelector';
+import { getCategoryDisplayName , CategorySelector } from './CategorySelector';
 import { EXPENSE_CATEGORIES } from './CategorySelector';
 import TaskModal from './TaskModal';
 
@@ -121,8 +122,8 @@ const KanbanBoard = ({ user }) => {
       const columnsResponse = await columnsAPI.getByBoardId(boardResponse.data.id);
       setColumns(columnsResponse.data);
       
-      // Fetch tasks
-      await fetchTasks();
+      // 🔧 Fetch tasks с учётом типа доски
+      await fetchTasks(boardResponse.data.type);
       
       // Fetch assignable users for this board
       try {
@@ -145,7 +146,8 @@ const KanbanBoard = ({ user }) => {
     }
   };
 
-  const fetchTasks = async () => {
+  // 🔧 теперь принимает forceType и выбирает API по типу
+  const fetchTasks = async (forceType) => {
     try {
       const params = {};
       
@@ -159,8 +161,11 @@ const KanbanBoard = ({ user }) => {
       if (filters.assignees && filters.assignees.length > 0) {
         params.assignees = filters.assignees.join(',');
       }
+
+      const boardType = (forceType || board?.type || 'tasks').toLowerCase();
+      const apiForBoard = boardType === 'expenses' ? expensesAPI : tasksAPI;
       
-      const response = await tasksAPI.getByBoard(boardKey, params);
+      const response = await apiForBoard.getByBoard(boardKey, params);
       console.log('Fetched tasks:', response.data);
       setTasks(response.data);
     } catch (error) {
@@ -202,18 +207,18 @@ const KanbanBoard = ({ user }) => {
     ));
 
     try {
-      await tasksAPI.update(task.id, { column_id: newColumnId });
+      // 🔧 учитываем тип доски
+      const apiForBoard = (board?.type === 'expenses') ? expensesAPI : tasksAPI;
+      await apiForBoard.update(task.id, { column_id: newColumnId });
       
       // If it's cross-team routing, show special message and refresh after delay
       if (isToTech) {
         toast.success('Task routed to Tech team! It will appear on their board.');
-        // Remove the task from current view after routing
         setTimeout(() => {
           setTasks(prevTasks => prevTasks.filter(t => t.id !== taskId));
         }, 2000);
       } else if (isToDesigners) {
         toast.success('Task routed to Design team! It will appear on their board.');
-        // Remove the task from current view after routing
         setTimeout(() => {
           setTasks(prevTasks => prevTasks.filter(t => t.id !== taskId));
         }, 2000);
@@ -278,7 +283,9 @@ const KanbanBoard = ({ user }) => {
 
   const updateTaskAssignee = async (taskId, assigneeId) => {
     try {
-      await tasksAPI.update(taskId, { assignee_id: assigneeId });
+      // 🔧 учитываем тип доски
+      const apiForBoard = (board?.type === 'expenses') ? expensesAPI : tasksAPI;
+      await apiForBoard.update(taskId, { assignee_id: assigneeId });
       setTasks(tasks.map(t => 
         t.id === taskId 
           ? { ...t, assignee_id: assigneeId }
@@ -675,7 +682,7 @@ const DroppableColumn = ({ column, tasks, users, onUpdateAssignee, onTaskClick, 
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-green-700 dark:text-green-200">Итого:</span>
                 <span className="text-sm font-bold text-green-800 dark:text-green-100" data-testid={`column-total-${column.key.toLowerCase()}`}>
-                  ₽{totalAmount.toLocaleString()}
+                  ${totalAmount.toLocaleString()}
                 </span>
               </div>
             </div>
@@ -833,7 +840,7 @@ const TaskCard = ({ task, assignedUser, users, onUpdateAssignee, onTaskClick, ge
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-green-700 dark:text-green-200">Amount:</span>
             <span className="text-lg font-bold text-green-800 dark:text-green-100" data-testid="task-amount">
-              ₽{task.amount.toLocaleString()}
+              ${task.amount.toLocaleString()}
             </span>
           </div>
         </div>
@@ -1113,7 +1120,7 @@ const TaskForm = ({ columns, users, onSubmit, boardSettings, initialData = null,
 
         {boardType === 'expenses' && (
           <div>
-            <Label htmlFor="amount" className="text-gray-700 dark:text-white">Amount (₽) *</Label>
+            <Label htmlFor="amount" className="text-gray-700 dark:text-white">Amount ($) *</Label>
             <Input
               id="amount"
               type="number"
