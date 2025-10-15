@@ -18,6 +18,7 @@ import taskRoutes from './routes/tasks';
 import adminRoutes from './routes/admin';
 import adminRolesRoutes from './routes/adminRoles';
 import departmentsRouter from './routes/departments';
+import expensesRoutes from './routes/expenses';
 
 // Load environment variables
 dotenv.config();
@@ -90,6 +91,7 @@ app.use('/api/admin/roles', authMiddleware, adminRolesRoutes);
 app.use('/api/admin/departments', departmentsRouter);
 /** ====================================================== */
 
+app.use('/api/expenses', authMiddleware, expensesRoutes);
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
