@@ -5,7 +5,7 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { EXPENSE_CATEGORIES } from './CategorySelector';
-import { boardsAPI, columnsAPI, tasksAPI } from '../lib/api';
+import { boardsAPI, columnsAPI, expensesAPI, usersAPI } from '../lib/api';
 import { toast } from 'sonner';
 import {
   DollarSign,
@@ -15,6 +15,7 @@ import {
   BarChart3,
   Filter,
   Download,
+  Group as GroupIcon
 } from 'lucide-react';
 
 // recharts
@@ -25,7 +26,8 @@ import {
   LineChart, Line
 } from 'recharts';
 
-const BOARD_KEY_EXPENSES = 'EXP';
+// ====== КОНСТАНТЫ ======
+const DEFAULT_EXPENSES_BOARD_KEY = 'EXPT'; // <-- ключ твоей доски расходов
 
 // ПАЛИТРА для графиков
 const COLORS = [
@@ -34,7 +36,7 @@ const COLORS = [
   '#14b8a6', '#f59e0b', '#64748b', '#10b981', '#fb7185'
 ];
 
-// ===== вспомогалки для категорий =====
+// ====== УТИЛИТЫ ======
 const titleFromSlug = (s = '') =>
   s.replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
@@ -52,57 +54,78 @@ const splitCategory = (raw) => {
   return { main: cat, sub: null };
 };
 
-const formatRub = (n) => `$${(Number(n) || 0).toLocaleString('us-US')}`;
+const formatMoney = (n) => `$${(Number(n) || 0).toLocaleString('en-US')}`;
+
+// начало недели (понедельник) от даты
+const startOfWeek = (d) => {
+  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = dt.getUTCDay() || 7; // 1..7 (Mon..Sun)
+  if (day !== 1) dt.setUTCDate(dt.getUTCDate() - (day - 1));
+  return dt;
+};
+const ymd = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const ym = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 
 // ================= COMPONENT =================
-const ExpensesDashboard = ({ user }) => {
+const ExpensesDashboard = ({ user, boardKey = DEFAULT_EXPENSES_BOARD_KEY }) => {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [filters, setFilters] = useState({
     dateRange: 'current-month', // all | current-month | last-month | current-year
     category: 'all',            // 'all' | 'uncategorized' | <MAIN_CATEGORY>
+    granularity: 'auto',        // auto | day | week | month
   });
 
   const [columnsById, setColumnsById] = useState({});
+  const [usersById, setUsersById]   = useState({});
   const [bootstrapDone, setBootstrapDone] = useState(false);
 
-  // --- Access check (оставляю как у тебя) ---
+  // --- Access check (как у тебя) ---
   const noAccess =
     !user ||
     (!Array.isArray(user.roles)) ||
     (!user.roles.includes('admin') && !user.roles.includes('main_admin'));
 
-  // --- Bootstrap: получить id доски и её колонки ---
+  // --- Bootstrap: попытка взять доску и колонки (если 404 — не критично) + пользователи ---
   const bootstrap = useCallback(async () => {
     try {
-      const { data: board } = await boardsAPI.getByKey(BOARD_KEY_EXPENSES);
-      const { data: cols } = await columnsAPI.getByBoardId(board.id);
+      // колонки доски (для красивых названий статусов)
+      try {
+        const { data: board } = await boardsAPI.getByKey(boardKey);
+        const { data: cols } = await columnsAPI.getByBoardId(board.id);
+        const map = {};
+        (cols || []).forEach((c) => { if (c?.id) map[c.id] = c.name || c.key || c.id; });
+        setColumnsById(map);
+      } catch (e) {
+        // 404 — просто работаем без имён колонок
+        console.warn('ExpensesDashboard: board/columns not found, continue without columns', e?.response?.status);
+      }
 
-      const map = {};
-      (cols || []).forEach((c) => {
-        if (c?.id) map[c.id] = c.name || c.key || c.id;
-      });
-      setColumnsById(map);
-      setBootstrapDone(true);
-    } catch (e) {
-      console.error('ExpensesDashboard bootstrap error:', e);
-      toast.error('Failed to bootstrap expenses board');
+      // пользователи (для департаментов по исполнителю/создателю)
+      try {
+        const resUsers = await usersAPI.getAll();
+        const m = {};
+        (resUsers?.data || []).forEach(u => { m[u.id] = u; });
+        setUsersById(m);
+      } catch (e) {
+        console.warn('ExpensesDashboard: users not loaded, departments may be "UNSPECIFIED"');
+      }
+    } finally {
       setBootstrapDone(true);
     }
-  }, []);
+  }, [boardKey]);
 
-  useEffect(() => {
-    bootstrap();
-  }, [bootstrap]);
+  useEffect(() => { bootstrap(); }, [bootstrap]);
 
-  // --- Загрузка расходов (tasks с amount) ---
+  // --- Загрузка расходов (ИСКЛЮЧИТЕЛЬНО ЧЕРЕЗ expensesAPI) ---
   const fetchExpenses = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await tasksAPI.getByBoard(BOARD_KEY_EXPENSES);
+      const res = await expensesAPI.getByBoard(boardKey);
       const list = Array.isArray(res.data) ? res.data : [];
-      // оставляем только те, где есть сумма
       setExpenses(list.filter((t) => t && t.amount != null));
     } catch (error) {
       console.error('Load expenses error:', error);
@@ -110,9 +133,8 @@ const ExpensesDashboard = ({ user }) => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [boardKey]);
 
-  // Загружаем расходы после bootstrap и при изменении фильтров
   useEffect(() => {
     if (bootstrapDone) {
       fetchExpenses();
@@ -127,7 +149,7 @@ const ExpensesDashboard = ({ user }) => {
     const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
     return expenses.filter((expense) => {
-      // Категория (поддержка пустых и underscore)
+      // Категория
       if (filters.category !== 'all') {
         const { main } = splitCategory(expense.category);
         if (filters.category === 'uncategorized') {
@@ -163,18 +185,28 @@ const ExpensesDashboard = ({ user }) => {
     });
   }, [expenses, filters]);
 
-  // --- Агрегации ---
-  const { totalAmount, averageExpense, expenseCount } = useMemo(() => {
+  // --- Агрегации общие ---
+  const { totalAmount, averageExpense, expenseCount, dateSpanDays } = useMemo(() => {
     const total = filteredExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
     const count = filteredExpenses.length;
+
+    let minD = null, maxD = null;
+    filteredExpenses.forEach(e => {
+      const d = new Date(e.created_at || e.createdAt || e.updated_at || e.updatedAt || Date.now());
+      if (!minD || d < minD) minD = d;
+      if (!maxD || d > maxD) maxD = d;
+    });
+    const span = minD && maxD ? Math.max(1, Math.round((maxD - minD) / 86400000)) : 1;
+
     return {
       totalAmount: total,
       averageExpense: count > 0 ? total / count : 0,
       expenseCount: count,
+      dateSpanDays: span,
     };
   }, [filteredExpenses]);
 
-  // Категории: main/sub дерево
+  // --- Категории: main/sub дерево ---
   const categoriesTree = useMemo(() => {
     const result = {};
     filteredExpenses.forEach((e) => {
@@ -208,14 +240,43 @@ const ExpensesDashboard = ({ user }) => {
     return result;
   }, [filteredExpenses]);
 
-  // Данные для ГРАФИКОВ
+  // --- Департаменты ---
+  const departmentOfExpense = (e) => {
+    // 1) явное поле в расходе
+    const direct = e.department || (Array.isArray(e.departments) && e.departments[0]);
+    if (direct) return String(direct).toUpperCase();
+
+    // 2) по ассайни
+    if (e.assignee_id && usersById[e.assignee_id]?.departments?.length) {
+      return String(usersById[e.assignee_id].departments[0]).toUpperCase();
+    }
+
+    // 3) по создателю
+    if (e.creator_id && usersById[e.creator_id]?.departments?.length) {
+      return String(usersById[e.creator_id].departments[0]).toUpperCase();
+    }
+
+    return 'UNSPECIFIED';
+  };
+
+  const departmentsAgg = useMemo(() => {
+    const map = {};
+    filteredExpenses.forEach(e => {
+      const dep = departmentOfExpense(e);
+      if (!map[dep]) map[dep] = { name: dep, total: 0, count: 0 };
+      map[dep].total += Number(e.amount) || 0;
+      map[dep].count += 1;
+    });
+    return map;
+  }, [filteredExpenses, usersById]);
+
+  // --- Данные для графиков по категориям ---
   const categoryPieData = useMemo(() => {
     const arr = Object.entries(categoriesTree).map(([key, v]) => ({
       key,
       name: v.name,
       value: Math.round(v.total),
     }));
-    // сорт по сумме
     arr.sort((a, b) => b.value - a.value);
     return arr;
   }, [categoriesTree]);
@@ -231,7 +292,27 @@ const ExpensesDashboard = ({ user }) => {
     return arr;
   }, [categoriesTree]);
 
-  // Линейный график по времени (автогрануляция: день для коротких периодов, месяц — для длинных)
+  // --- Данные для графиков по департаментам ---
+  const departmentsPieData = useMemo(() => {
+    const arr = Object.values(departmentsAgg).map(v => ({
+      name: v.name,
+      value: Math.round(v.total),
+    }));
+    arr.sort((a, b) => b.value - a.value);
+    return arr;
+  }, [departmentsAgg]);
+
+  const departmentsBarData = useMemo(() => {
+    const arr = Object.values(departmentsAgg).map(v => ({
+      name: v.name,
+      amount: Math.round(v.total),
+      count: v.count,
+    }));
+    arr.sort((a, b) => b.amount - a.amount);
+    return arr;
+  }, [departmentsAgg]);
+
+  // --- Линейный график по времени с регулируемой гранулярностью ---
   const timeSeriesData = useMemo(() => {
     const items = filteredExpenses.map((e) => {
       const d = new Date(
@@ -241,23 +322,22 @@ const ExpensesDashboard = ({ user }) => {
     });
     if (items.length === 0) return [];
 
-    // сортировка по дате
     items.sort((a, b) => a.date - b.date);
 
-    const first = items[0].date;
-    const last = items[items.length - 1].date;
-    const diffDays = Math.max(1, Math.round((last - first) / 86400000));
+    const chooseGran = () => {
+      if (filters.granularity !== 'auto') return filters.granularity;
+      if (dateSpanDays > 92) return 'month';
+      if (dateSpanDays > 21) return 'week';
+      return 'day';
+    };
+    const gran = chooseGran();
 
     const byKey = new Map();
-    const fmt = (d) =>
-      diffDays > 92
-        ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` // YYYY-MM
-        : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
-            d.getDate()
-          ).padStart(2, '0')}`; // YYYY-MM-DD
-
     for (const it of items) {
-      const key = fmt(it.date);
+      let key;
+      if (gran === 'month') key = ym(it.date);
+      else if (gran === 'week') key = ymd(startOfWeek(it.date));
+      else key = ymd(it.date); // day
       byKey.set(key, (byKey.get(key) || 0) + it.amount);
     }
 
@@ -265,12 +345,11 @@ const ExpensesDashboard = ({ user }) => {
       label: k,
       value: Math.round(v),
     }));
-    // уже отсортировано по возрастанию ключа из Map — но перестрахуемся
     series.sort((a, b) => (a.label > b.label ? 1 : -1));
     return series;
-  }, [filteredExpenses]);
+  }, [filteredExpenses, filters.granularity, dateSpanDays]);
 
-  // По статусам/колонкам
+  // --- Статусы/колонки ---
   const statusData = useMemo(() => {
     const result = {};
     filteredExpenses.forEach((e) => {
@@ -302,7 +381,7 @@ const ExpensesDashboard = ({ user }) => {
           Expenses Dashboard
         </h1>
         <p className="text-gray-600 dark:text-gray-300">
-          Overview of expenses by categories and subcategories
+          Overview of expenses by categories, departments and time
         </p>
       </div>
 
@@ -315,7 +394,7 @@ const ExpensesDashboard = ({ user }) => {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Date Range
@@ -359,10 +438,30 @@ const ExpensesDashboard = ({ user }) => {
               </Select>
             </div>
 
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Time Granularity
+              </label>
+              <Select
+                value={filters.granularity}
+                onValueChange={(value) => setFilters((f) => ({ ...f, granularity: value }))}
+              >
+                <SelectTrigger className="dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="dark:bg-gray-700 dark:border-gray-600">
+                  <SelectItem value="auto" className="dark:text-gray-200">Auto</SelectItem>
+                  <SelectItem value="day" className="dark:text-gray-200">Day</SelectItem>
+                  <SelectItem value="week" className="dark:text-gray-200">Week</SelectItem>
+                  <SelectItem value="month" className="dark:text-gray-200">Month</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="flex items-end">
               <Button onClick={fetchExpenses} disabled={loading} className="bg-blue-600 hover:bg-blue-700 text-white">
                 <Download className="w-4 h-4 mr-2" />
-                Refresh / Export Data
+                Refresh
               </Button>
             </div>
           </div>
@@ -379,9 +478,9 @@ const ExpensesDashboard = ({ user }) => {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-green-600">{formatRub(totalAmount)}</div>
+            <div className="text-3xl font-bold text-green-600">{formatMoney(totalAmount)}</div>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              {expenseCount} expense{expenseCount !== 1 ? 's' : ''}
+              {expenseCount} item{expenseCount !== 1 ? 's' : ''}
             </p>
           </CardContent>
         </Card>
@@ -395,7 +494,7 @@ const ExpensesDashboard = ({ user }) => {
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-blue-600">
-              {formatRub(Math.round(averageExpense))}
+              {formatMoney(Math.round(averageExpense))}
             </div>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Per expense item</p>
           </CardContent>
@@ -405,22 +504,19 @@ const ExpensesDashboard = ({ user }) => {
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center space-x-2 text-gray-900 dark:text-gray-100">
               <Calendar className="w-5 h-5 text-purple-600" />
-              <span>Period</span>
+              <span>Granularity</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-lg font-semibold text-purple-600">
-              {filters.dateRange === 'all' && 'All Time'}
-              {filters.dateRange === 'current-month' && 'Current Month'}
-              {filters.dateRange === 'last-month' && 'Last Month'}
-              {filters.dateRange === 'current-year' && 'Current Year'}
+              {filters.granularity === 'auto' ? 'Auto' : filters.granularity.toUpperCase()}
             </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Selected time range</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{dateSpanDays} day span</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* CHARTS */}
+      {/* CHARTS: Категории */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
         {/* Pie by category */}
         <Card className="dark:bg-gray-800 dark:border-gray-700">
@@ -449,7 +545,7 @@ const ExpensesDashboard = ({ user }) => {
                       <Cell key={i} fill={COLORS[i % COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(v) => formatRub(v)} />
+                  <Tooltip formatter={(v) => formatMoney(v)} />
                   <Legend />
                 </PieChart>
               </ResponsiveContainer>
@@ -474,7 +570,7 @@ const ExpensesDashboard = ({ user }) => {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="name" interval={0} angle={-20} textAnchor="end" height={60} />
                   <YAxis tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-                  <Tooltip formatter={(v) => formatRub(v)} />
+                  <Tooltip formatter={(v) => formatMoney(v)} />
                   <Bar dataKey="amount">
                     {categoryBarData.map((_, i) => (
                       <Cell key={i} fill={COLORS[i % COLORS.length]} />
@@ -501,7 +597,7 @@ const ExpensesDashboard = ({ user }) => {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="label" />
                 <YAxis tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-                <Tooltip formatter={(v) => formatRub(v)} />
+                <Tooltip formatter={(v) => formatMoney(v)} />
                 <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
@@ -511,7 +607,7 @@ const ExpensesDashboard = ({ user }) => {
         </CardContent>
       </Card>
 
-      {/* Категории: список + сабкатегории (как у тебя) */}
+      {/* Категории: список + сабкатегории */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Main Categories (progress list) */}
         <Card className="dark:bg-gray-800 dark:border-gray-700">
@@ -532,7 +628,7 @@ const ExpensesDashboard = ({ user }) => {
                     </Badge>
                   </div>
                   <div className="text-2xl font-bold text-green-600">
-                    {formatRub(data.total)}
+                    {formatMoney(data.total)}
                   </div>
                   <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mt-2">
                     <div
@@ -577,7 +673,7 @@ const ExpensesDashboard = ({ user }) => {
                           <span className="text-sm text-gray-700 dark:text-gray-300">{subData.name}</span>
                           <div className="text-right">
                             <div className="font-semibold text-gray-900 dark:text-gray-100">
-                              {formatRub(subData.total)}
+                              {formatMoney(subData.total)}
                             </div>
                             <div className="text-xs text-gray-500 dark:text-gray-400">
                               {subData.count} item{subData.count !== 1 ? 's' : ''}
@@ -601,7 +697,76 @@ const ExpensesDashboard = ({ user }) => {
         </Card>
       </div>
 
-      {/* Статусы/колонки по суммам */}
+      {/* ДЕПАРТАМЕНТЫ */}
+      <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Pie by department */}
+        <Card className="dark:bg-gray-800 dark:border-gray-700">
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2 text-gray-900 dark:text-gray-100">
+              <GroupIcon className="w-5 h-5" />
+              <span>Share by Department</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent style={{ height: 360 }}>
+            {departmentsPieData.length ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={departmentsPieData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={120}
+                    label={(d) =>
+                      `${d.name}: ${((d.value / (totalAmount || 1)) * 100).toFixed(1)}%`
+                    }
+                  >
+                    {departmentsPieData.map((_, i) => (
+                      <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v) => formatMoney(v)} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="text-sm text-gray-500 dark:text-gray-400">No data</div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Bar by department */}
+        <Card className="dark:bg-gray-800 dark:border-gray-700">
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2 text-gray-900 dark:text-gray-100">
+              <BarChart3 className="w-5 h-5" />
+              <span>Amount by Department</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent style={{ height: 360 }}>
+            {departmentsBarData.length ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={departmentsBarData} margin={{ top: 10, right: 10, left: 0, bottom: 30 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" interval={0} angle={-10} textAnchor="end" height={40} />
+                  <YAxis tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                  <Tooltip formatter={(v) => formatMoney(v)} />
+                  <Bar dataKey="amount">
+                    {departmentsBarData.map((_, i) => (
+                      <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="text-sm text-gray-500 dark:text-gray-400">No data</div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Таблица по статусам/колонкам */}
       <div className="mt-8">
         <Card className="dark:bg-gray-800 dark:border-gray-700">
           <CardHeader>
@@ -614,7 +779,7 @@ const ExpensesDashboard = ({ user }) => {
                   {columnsById[colId] || colId}
                 </span>
                 <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                  {formatRub(stat.total)} ({stat.count})
+                  {formatMoney(stat.total)} ({stat.count})
                 </span>
               </div>
             ))}
