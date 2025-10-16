@@ -3,13 +3,14 @@ import React, { useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Button } from './ui/button';
 import { useTheme } from '../contexts/ThemeContext';
-import { 
-  LayoutDashboard, 
-  User, 
-  LogOut, 
+import {
+  LayoutDashboard,
+  User,
+  LogOut,
   Kanban,
   Settings,
-  BarChart3
+  BarChart3,
+  PieChart as PieChartIcon,
 } from 'lucide-react';
 import AdminSettings from './AdminSettings';
 
@@ -47,8 +48,8 @@ const roleTitle = (r) => {
 
 const Navigation = ({ user, onLogout }) => {
   const location = useLocation();
-  const { theme, toggleTheme } = useTheme(); // оставил как было — вдруг используешь где-то
-  const [showAdminSettings, setShowAdminSettings] = useState(false); // ⬅️ вернул стейт
+  const { theme, toggleTheme } = useTheme(); // оставил — если используешь где-то
+  const [showAdminSettings, setShowAdminSettings] = useState(false);
 
   const isActive = (path) => location.pathname === path;
 
@@ -78,17 +79,21 @@ const Navigation = ({ user, onLogout }) => {
     return colors[role] || 'bg-gray-100 text-gray-800 dark:bg-gray-700/50 dark:text-gray-200';
   };
 
+  // базовые пункты
   const navigationItems = [
     { path: '/boards', label: 'Boards', icon: LayoutDashboard, testId: 'nav-boards' },
     { path: '/me', label: 'Personal Cabinet', icon: User, testId: 'nav-me' },
+    // общий дашборд задач — доступен всем
+    { path: '/dashboard/tasks', label: 'Tasks Dashboard', icon: BarChart3, testId: 'nav-tasks-dashboard' },
   ];
 
+  // дашборд расходов — только админам
   if (roles.includes('admin')) {
     navigationItems.push({
       path: '/dashboard/expenses',
       label: 'Expenses Dashboard',
-      icon: BarChart3,
-      testId: 'nav-expenses-dashboard'
+      icon: PieChartIcon,
+      testId: 'nav-expenses-dashboard',
     });
   }
 
@@ -128,22 +133,22 @@ const Navigation = ({ user, onLogout }) => {
             </p>
           </div>
         </div>
-        
+
         {/* Role Badges */}
         <div className="flex flex-wrap gap-1">
-          {roles.length
-            ? roles.map((r) => (
-                <span
-                  key={r}
-                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${getRoleBadgeColor(r)}`}
-                  data-testid={`user-role-${r}`}
-                >
-                  {roleTitle(r)}
-                </span>
-              ))
-            : (
-              <span className="text-xs text-gray-400">no roles</span>
-            )}
+          {roles.length ? (
+            roles.map((r) => (
+              <span
+                key={r}
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${getRoleBadgeColor(r)}`}
+                data-testid={`user-role-${r}`}
+              >
+                {roleTitle(r)}
+              </span>
+            ))
+          ) : (
+            <span className="text-xs text-gray-400">no roles</span>
+          )}
         </div>
       </div>
 
@@ -151,18 +156,19 @@ const Navigation = ({ user, onLogout }) => {
       <nav className="flex-1 px-2 py-3 space-y-1">
         {navigationItems.map((item) => {
           const Icon = item.icon;
+          const active = isActive(item.path);
           return (
             <Link
               key={item.path}
               to={item.path}
               className={`flex items-center space-x-2 px-2 py-2 rounded-lg transition-all duration-200 text-sm ${
-                isActive(item.path)
+                active
                   ? 'bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/30 dark:to-indigo-900/30 text-blue-700 dark:text-blue-300 shadow-sm'
                   : 'text-gray-600 dark:text-gray-200 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-600/50'
               }`}
               data-testid={item.testId}
             >
-              <Icon className={`w-4 h-4 ${isActive(item.path) ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-400'}`} />
+              <Icon className={`w-4 h-4 ${active ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-gray-400'}`} />
               <span className="font-medium">{item.label}</span>
             </Link>
           );
@@ -182,7 +188,7 @@ const Navigation = ({ user, onLogout }) => {
             Settings
           </Button>
         )}
-        
+
         <Button
           variant="ghost"
           onClick={onLogout}
@@ -195,7 +201,7 @@ const Navigation = ({ user, onLogout }) => {
       </div>
 
       {/* Admin Settings Dialog */}
-      <AdminSettings 
+      <AdminSettings
         open={showAdminSettings}
         onClose={() => setShowAdminSettings(false)}
         user={user}

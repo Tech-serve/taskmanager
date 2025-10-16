@@ -12,6 +12,7 @@ import BoardsList from './components/BoardsList';
 import KanbanBoard from './components/KanbanBoard';
 import PersonalCabinet from './components/PersonalCabinet';
 import ExpensesDashboard from './components/ExpensesDashboard';
+import TasksDashboard from './components/TasksDashboard';
 
 // API
 import { authAPI } from './lib/api';
@@ -109,6 +110,7 @@ function App() {
                   <Route path="/me" element={<PersonalCabinet user={user} />} />
                   <Route path="/dashboard/expenses" element={<ExpensesDashboard user={user} />} />
                   <Route path="*" element={<Navigate to="/boards" />} />
+                  <Route path="/dashboard/tasks" element={<TasksDashboard user={user} />} />
                 </Routes>
               </main>
             </div>
